@@ -1,5 +1,7 @@
 import os
 import errno
+from collections import Iterable
+from warnings import warn
 from abc import abstractmethod, abstractproperty
 from collections import OrderedDict
 
@@ -13,26 +15,7 @@ from fuel.transformers import Batch, Padding, Unpack
 class AbstractDataset(object):
     def __init__(self, *args, **kwargs):
         self.provide_souces = None
-
-    @abstractmethod
-    def initialize(self, param_load_from=None):
-        '''Initialize dataset information, like word table.
-
-        If param_load_from is None, traing dataset should be provided and the dataset information will
-        be extracted or overrided from the training data set.
-        :param param_load_from: str
-                The file path from which to load the dataset parameter. The paramters stored
-                in the file should be dumped by cPickle with cPickle.dump(obj, file).
-                If it is None (default), dataset information should extracted from training data set.
-        :param args:
-        :param kwargs:
-        :exception: IOError
-                And IOError is raised if param_load_from is not None and file path not exists. This is designed
-                to monitor occasional error by user.
-        '''
-        if not os.path.exists(param_load_from):
-            raise IOError('{0} not exist!'.format(param_load_from))
-        self._initialize(param_load_from)
+        self.initialized = False
 
     @abstractmethod
     def get_parameter_to_save(self):
@@ -46,8 +29,15 @@ class AbstractDataset(object):
         raise NotImplementedError('get_parameter_to_save is not implemented!')
 
     @abstractmethod
-    def _initialize(self, param_load_from=None):
+    def save_paramter(self, param_save_to = None, *args, **kwargs):
+        pass
+
+    @abstractmethod
+    def _initialize(self, param_load_from = None):
         '''Initialize dataset information
+
+        Note:
+        If the dataset has been initialized successfully, self.initialized should be set True else False
         '''
         raise NotImplementedError
 
@@ -94,9 +84,11 @@ class AbstractDataset(object):
     def _map(self, raw_dataset, for_type='train'):
         '''Map raw dataset into integer representation dataset
 
-        :param raw_dataset: list, tuple or numpy.ndarray
-                    This stores the training samples with an index of raw_dataset corresponding one sample.
-                    e.g., raw_dataset[i] should be the ith sample.
+        :param raw_dataset: list or tuple
+                    This stores the attributes of training samples. Every item corresponds an attribute and
+                    the length of each attribute should be the same.
+                    e.g., raw_dataset = [list_of_ids,list_of_ages,list_of_genders] and
+                    len(list_of_ids) == len(list_of_ages) == len(list_of_genders)
         :param for_type: str
                 Indicator of the usage of this dataset: 'train','valid' or 'test'
         :return: list
@@ -184,6 +176,26 @@ class AbstractDataset(object):
         #     stream = Padding(stream, mask_sources=[source[0]], mask_dtype=source[1])
         return stream
 
+    def initialize(self, param_load_from=None):
+        '''Initialize dataset information, like word table.
+
+        If param_load_from is None, traing dataset should be provided and the dataset information will
+        be extracted or overrided from the training data set.
+        :param param_load_from: str
+                The file path from which to load the dataset parameter. The paramters stored
+                in the file should be dumped by cPickle with cPickle.dump(obj, file).
+                If it is None (default), dataset information should extracted from training data set.
+        :param args:
+        :param kwargs:
+        :exception: IOError
+                And IOError is raised if param_load_from is not None and file path not exists. This is designed
+                to monitor occasional error by user.
+        '''
+        if param_load_from is not None and (not os.path.exists(param_load_from)):
+            warn('{0} not exist and cannot load parameters from that to initialize dataset!\n'
+                 'Do not do testing before training!'.format(param_load_from))
+        self._initialize(param_load_from)
+
     def get_train_stream(self, raw_dataset, it='shuffled'):
         '''Construct a fuel.stream object for training from the raw dataset.
 
@@ -191,9 +203,11 @@ class AbstractDataset(object):
         representation, mapping true labels and predicted labels, extracting training data information,
         padding and shuffling samples and so on.
 
-        :param raw_dataset: list, tuple or numpy.ndarray
-                    This stores the training samples with an index of raw_dataset corresponding one sample.
-                    e.g., raw_dataset[i] should be the ith sample.
+        :param raw_dataset: list or tuple
+                    This stores the attributes of training samples. Every item corresponds an attribute and
+                    the length of each attribute should be the same.
+                    e.g., raw_dataset = [list_of_ids,list_of_ages,list_of_genders] and
+                    len(list_of_ids) == len(list_of_ages) == len(list_of_genders)
         :param it: str
                 Assign the iteration schema used in fuel.stream. If it is 'shuffled' (default), samples
                 will be shuffled before feeding into training, this is necessary for trainig with Stochastic
@@ -203,7 +217,13 @@ class AbstractDataset(object):
         :return: fuel.stream
                 This is typically feeded into the training processing.
         '''
-        return self._get_stream(raw_dataset, it, for_type='train')
+
+        try:
+            self.initialized = True
+            return self._get_stream(raw_dataset, it, for_type='train')
+        except Exception as e:
+            self.initialized = False
+            raise e
 
     def get_valid_stream(self, raw_dataset, it='sequencial'):
         '''Construct a fuel.stream object for validation from the raw dataset.
@@ -211,9 +231,11 @@ class AbstractDataset(object):
         It should do some processings on the raw dataset, like mapping string type of words into integer
         representation, extracting training data information, padding and shuffling samples and so on.
 
-        :param raw_dataset: list, tuple or numpy.ndarray
-                    This stores the validation samples with an index of raw_dataset corresponding one sample.
-                    e.g., raw_dataset[i] should be the ith sample.
+        :param raw_dataset: list or tuple
+                This stores the attributes of training samples. Every item corresponds an attribute and
+                the length of each attribute should be the same.
+                e.g., raw_dataset = [list_of_ids,list_of_ages,list_of_genders] and
+                len(list_of_ids) == len(list_of_ages) == len(list_of_genders)
         :param it: str
                 Assign the iteration schema used in fuel.stream. The default is 'sequencial' which will keep 
                 the order of samples. If it is 'shuffled', samples will be shuffled before feeding into validation.
@@ -222,28 +244,45 @@ class AbstractDataset(object):
         :return: fuel.stream
                 This is typically feeded into the validation processing.
         '''
-        return self._get_stream(raw_dataset, it, for_type='valid')
+        if self.initialized:
+            return self._get_stream(raw_dataset, it, for_type='valid')
+        else:
+            raise Exception('Cannot obtain validation stream for dataset has not been initialized!')
 
     def get_test_stream(self, raw_dataset, it='sequencial'):
         '''Construct a fuel.stream object for test from the raw dataset.
         
-                It should do some processings on the raw dataset, like mapping string type of words into integer
-                representation, extracting training data information, padding and shuffling samples and so on.
-        
-                :param raw_dataset: list, tuple or numpy.ndarray
-                            This stores the test samples with an index of raw_dataset corresponding one sample.
-                            e.g., raw_dataset[i] should be the ith sample.
-                :param it: str
-                        Assign the iteration schema used in fuel.stream. The default is 'sequencial' which will keep 
-                        the order of samples. If it is 'shuffled', samples will be shuffled before feeding into test.
-                        This option is usually used during training with SGD.
-                        
-                :return: fuel.stream
-                        This is typically feeded into the test processing.
-                '''
-        return self._get_stream(raw_dataset, it, for_type='test')
+        It should do some processings on the raw dataset, like mapping string type of words into integer
+        representation, extracting training data information, padding and shuffling samples and so on.
+
+        :param raw_dataset: list or tuple
+                    This stores the attributes of training samples. Every item corresponds an attribute and
+                    the length of each attribute should be the same.
+                    e.g., raw_dataset = [list_of_ids,list_of_ages,list_of_genders] and
+                    len(list_of_ids) == len(list_of_ages) == len(list_of_genders)
+        :param it: str
+                Assign the iteration schema used in fuel.stream. The default is 'sequencial' which will keep
+                the order of samples. If it is 'shuffled', samples will be shuffled before feeding into test.
+                This option is usually used during training with SGD.
+
+        :return: fuel.stream
+                This is typically feeded into the test processing.
+        '''
+        if self.initialized:
+            return self._get_stream(raw_dataset, it, for_type='test')
+        else:
+            raise Exception('Cannot obtain testing stream for dataset has not been initialized!')
 
     def _get_stream(self, raw_dataset, it='shuffled', for_type='train'):
+
+        if not isinstance(raw_dataset, Iterable) or len(raw_dataset) == 0:
+            raise ValueError('raw_dataset should be a non empty list or tuple!')
+        l = len(raw_dataset[0])
+        for attr in raw_dataset:
+            if len(attr) != l:
+                raise ValueError('The length of attributes of raw_dataset are not the same!')
+            else:
+                pass
         raw_dataset = self._process_before_mapping(raw_dataset, for_type)
         dataset = self._map(raw_dataset, for_type)
         dataset = self._process_after_mapping(dataset, for_type)
@@ -337,9 +376,11 @@ class AbstractClssificationDataset(AbstractDataset):
         if hasattr(self, '_true_label2pred_label'):
             return self._true_label2pred_label
         else:
-            assert isinstance(self.label_num, int)
-            l = range(self.label_num)
-            return dict(zip(l,l))
+            return None
+
+    @true_label2pred_label.setter
+    def true_label2pred_label(self, value):
+        self._true_label2pred_label = value
 
     @property
     def pred_label2true_label(self):
@@ -356,9 +397,7 @@ class AbstractClssificationDataset(AbstractDataset):
         if hasattr(self, '_pred_label2true_label'):
             return self._pred_label2true_label
         else:
-            assert isinstance(self.label_num, int)
-            l = range(self.label_num)
-            return dict(zip(l, l))
+            return None
 
 
 class AbstractDocClassificationDataset(AbstractClssificationDataset):
