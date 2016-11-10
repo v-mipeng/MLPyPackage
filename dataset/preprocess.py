@@ -8,7 +8,6 @@ import numpy as np
 import jieba
 
 
-
 class AbstractPreprocessor(object):
     '''Do preprocessing on raw dataset
 
@@ -49,10 +48,9 @@ class AbstractPreprocessor(object):
         '''Do preprocessing on the given dataset
 
         The processing is applied on the outputs of former preprocessor defined in the constructor
-        :param raw_dataset: list or tuple of numpy.ndarray
-                This stores the attributes of training samples. Every item corresponds an attribute and
-                the length of each attribute should be the same.
-        :return: list or tuple
+        :param raw_dataset: dict
+                Map field name to field value (numpy.ndarray).
+        :return: dict
                 Pre-processed raw dataset
         '''
         if self.preprocessor is not None:
@@ -72,47 +70,47 @@ class AbstractPreprocessor(object):
 
 
 class ChineseTokenizer(AbstractPreprocessor):
-    def __init__(self, source_index, *args, **kwargs):
+    def __init__(self, source_name, *args, **kwargs):
         super(ChineseTokenizer, self).__init__(*args, **kwargs)
-        self.source_index = source_index
+        self.source_name = source_name
 
     def process(self, raw_dataset, *args, **kwargs):
         '''Tokenize chinese text into tokens with jieba in accurate mode with HMM
 
         Refer 'https://github.com/fxsjy/jieba' for more detail information about jieba
-        :param raw_dataset: list or tuple of numpy.ndarray
-                raw_dataset[self.text_index] should store the text field of dataset
+        :param raw_dataset: dict
+                raw_dataset[self.source_name] should store the text field of dataset
         :return: list
                 A new list with text in text filed being replaced by tokenized text.
         '''
-        texts = raw_dataset[self.source_index]
+        texts = raw_dataset[self.source_name]
         tokenized_texts = []
         for text in texts:
             tokenized_texts.append(jieba.lcut(text, cut_all=False, HMM=True))
-        new_raw_dataset = list(raw_dataset)
-        new_raw_dataset[self.source_index] = np.array(tokenized_texts)
+        new_raw_dataset = raw_dataset
+        raw_dataset[self.source_name] = np.array(tokenized_texts)
         return new_raw_dataset
 
 
-class ChinsesCharacterizer(AbstractPreprocessor):
+class ChineseCharacterizer(AbstractPreprocessor):
     '''Split chinese text into list of characters
 
-    Continuous digitals, english characters are combined and treated as one character.
+    Continuous digits, english characters are combined and treated as one character.
     '''
-    def __init__(self, source_index, *args, **kwargs):
-        super(ChinsesCharacterizer, self).__init__(*args, **kwargs)
-        self.source_index = source_index
+    def __init__(self, source_name, *args, **kwargs):
+        super(ChineseCharacterizer, self).__init__(*args, **kwargs)
+        self.source_name = source_name
 
     def process(self, raw_dataset, *args, **kwargs):
         '''Split chinese text into list of characters
 
 
         :param raw_dataset: list or tuple of numpy.ndarray
-                raw_dataset[self.text_index] should store the text field of dataset
+                raw_dataset[self.source_name] should store the text field of dataset
         :return: list
                 A new list with text in text filed being replaced by its composed characters.
         '''
-        texts = raw_dataset[self.source_index]
+        texts = raw_dataset[self.source_name]
         text_characters = []
         for text in texts:
             chars = []
@@ -128,8 +126,8 @@ class ChinsesCharacterizer(AbstractPreprocessor):
             if len(s)>0:
                 chars.append(''.join(s))
             text_characters.append(chars)
-        new_raw_dataset = list(raw_dataset)
-        new_raw_dataset[self.source_index] = np.array(text_characters)
+        new_raw_dataset = raw_dataset   # Here we do not use copy for memory saving
+        new_raw_dataset[self.source_name] = np.array(text_characters)
         return new_raw_dataset
 
     def _is_ascii(self, char):
@@ -150,15 +148,15 @@ class SparseTokenFilter(AbstractPreprocessor):
     For testing: load token2freq information (is training dataset has not been dealt within current runing),
                  do filtering
     '''
-    def __init__(self, source_index,
+    def __init__(self, source_name,
                  sparse_threshold,
                  load_from = None,
                  save_to = None,
                  backup_token = None,
                  *args, **kwargs):
         '''
-        :param source_index: int
-                The index of the token field to be filtered, i.e., raw_dataset[source_index]
+        :param source_name: str
+                The name of the token field to be filtered, i.e., raw_dataset[source_name]
         :param sparse_threshold: int (>=0)
                 Tokens with f(token) <= sparse_threshold are defined as sparse token.
         :param load_from: str
@@ -174,7 +172,7 @@ class SparseTokenFilter(AbstractPreprocessor):
                 Token to replace the sparse token, e.g., '<unk>'
         '''
         super(SparseTokenFilter, self).__init__(*args, **kwargs)
-        self.source_index = source_index
+        self.source_name = source_name
         self.sparse_threshold = sparse_threshold
         self.backup_token = backup_token
         self.load_from = load_from
@@ -194,7 +192,7 @@ class SparseTokenFilter(AbstractPreprocessor):
             return None
 
     def process(self, raw_dataset, *args, **kwargs):
-        texts = raw_dataset[self.source_index]
+        texts = raw_dataset[self.source_name]
         # Generate token2freq information
         if self._token2freq is None:
             if self.load_from is not None:
@@ -222,11 +220,11 @@ class SparseTokenFilter(AbstractPreprocessor):
                 filtered_texts.append(new_text)
                 idxes.append(idx)
         idxes = np.array(idxes)
-        for i in range(len(raw_dataset)):
-            if i != self.source_index:
-                raw_dataset[i] = raw_dataset[i][idxes]
-        new_raw_dataset = list(raw_dataset)
-        new_raw_dataset[self.source_index] = np.array(filtered_texts)
+        for source in raw_dataset.keys():
+            if source != self.source_name:
+                raw_dataset[source] = raw_dataset[source][idxes]
+        new_raw_dataset = raw_dataset
+        new_raw_dataset[self.source_name] = np.array(filtered_texts)
         return new_raw_dataset
 
     def _load_token2freq(self):
@@ -256,13 +254,13 @@ class KeywordFilter(AbstractPreprocessor):
 
     '''
 
-    def __init__(self, source_index,
+    def __init__(self, source_name,
                  load_from=None,
                  backup_token=None,
                  *args, **kwargs):
         '''
-        :param source_index: int
-                The index of the token field to be filtered, i.e., raw_dataset[source_index]
+        :param source_name: int
+                The name of the token field to be filtered, i.e., raw_dataset[source_name]
         :param load_from: str
                 File path to load keywords. The keywords should be stored in a set and pickled by cPickle.dump.
                 It will be loaded by cPickle.load(open(load_from, 'rb'))
@@ -270,7 +268,7 @@ class KeywordFilter(AbstractPreprocessor):
                 Token to replace the sparse token, e.g., '<unk>'
         '''
         super(KeywordFilter, self).__init__(*args, **kwargs)
-        self.source_index = source_index
+        self.source_name = source_name
         self.backup_token = backup_token
         self.load_from = load_from
         self._keywords = None
@@ -294,7 +292,7 @@ class KeywordFilter(AbstractPreprocessor):
             raise ValueError('Keywords should be stored in a list, tuple or set!')
 
     def process(self, raw_dataset, *args, **kwargs):
-        texts = raw_dataset[self.source_index]
+        texts = raw_dataset[self.source_name]
         # Filter out none keyword tokens
         idxes = []
         filtered_texts = []
@@ -312,11 +310,11 @@ class KeywordFilter(AbstractPreprocessor):
                 idxes.append(idx)
                 filtered_texts.append(new_text)
         idxes = np.array(idxes)
-        for i in range(len(raw_dataset)):
-            if i != self.source_index:
-                raw_dataset[i] = raw_dataset[i][idxes]
-        new_raw_dataset = list(raw_dataset)
-        new_raw_dataset[self.source_index] = np.array(filtered_texts)
+        for sources in raw_dataset.keys():
+            if sources != self.source_name:
+                raw_dataset[sources] = raw_dataset[sources][idxes]
+        new_raw_dataset = raw_dataset
+        new_raw_dataset[self.source_name] = np.array(filtered_texts)
         return new_raw_dataset
 
     def _load_keywords(self):
@@ -325,13 +323,13 @@ class KeywordFilter(AbstractPreprocessor):
 
 
 if __name__ == '__main__':
-    characterizer = ChinsesCharacterizer(0)
-    raw_dataset = [np.array(['我在中国good', 'American是个非常好的place我很666',
-                            '中国是个很有意思的地方','我来自中国','我在读书','hahaha']), np.array([1,2,3,4,5,6])]
+    characterizer = ChineseCharacterizer(0)
+    raw_dataset = {'doc':np.array(['我在中国good', 'American是个非常好的place我很666',
+                            '中国是个很有意思的地方','我来自中国','我在读书','hahaha']), 'idx':np.array([1,2,3,4,5,6])}
     # raw_dataset = characterizer.apply(raw_dataset)
-    tokenizer = ChineseTokenizer(0)
-    filter = SparseTokenFilter(0, 1, backup_token=None, preprocessor=tokenizer)
-    # filter = KeywordFilter(0, preprocessor=tokenizer)
-    # filter.keywords = {u'中国',u'good',u'American'}
+    tokenizer = ChineseTokenizer('doc')
+    # filter = SparseTokenFilter('doc', 1, backup_token=None, preprocessor=tokenizer)
+    filter = KeywordFilter('doc', preprocessor=tokenizer)
+    filter.keywords = {u'中国',u'good',u'American'}
     raw_dataset = filter.apply(raw_dataset)
     print(raw_dataset)

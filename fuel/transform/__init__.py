@@ -161,7 +161,6 @@ class CharEmbedding(Transformer):
         self.char_source = char_source
         self.char_idx_source = char_idx_source
 
-
     @property
     def sources(self):
         sources = []
@@ -276,9 +275,38 @@ class FeatureSample(Transformer):
         return tuple(batch_with_samplings)
 
 
-class FeatureSampleByFrequency(Transformer):
+class TokenSample(Transformer):
+    def __init__(self, data_stream, sample_prob, sample_source='query_mask', **kwargs):
+        '''For a given sample, sample its feature with probability given by sample_prob
+        :param data_stream:
+        :param sample_sources: Features on which sampling is applied. Commonly, if mask is applied, sample_sources should be mask names
+        :param sample_prob:
+        :return:
+        '''
+        super(TokenSample, self).__init__(
+            data_stream, produces_examples=False, **kwargs)
+        self.sample_source = sample_source
+        self.sample_prob = sample_prob
+        self._initialize()
+
+    def _initialize(self):
+        pass
+
+    def transform_batch(self, batch):
+        batch_with_samplings = []
+        for source, source_batch in zip(self.data_stream.sources, batch):
+            if source != self.sample_source:
+                batch_with_samplings.append(source_batch)
+                continue
+            rvs = numpy.random.rand(*source_batch.shape)
+            source_batch *= rvs < self.sample_prob
+            batch_with_samplings.append(source_batch)
+        return tuple(batch_with_samplings)
+
+
+class TokenSampleByFrequency(Transformer):
     def __init__(self,  data_stream, sample_source, neg_prob_source, sample_exp = 1., *args, **kwargs):
-        super(FeatureSampleByFrequency, self).__init__(
+        super(TokenSampleByFrequency, self).__init__(
             data_stream, produces_examples=False, **kwargs)
         self.sample_source = sample_source
         self.neg_prob_source = neg_prob_source
@@ -303,17 +331,20 @@ class FeatureSampleByFrequency(Transformer):
 
 
 class QeurySample(Transformer):
-    def __init__(self, data_stream, sample_source, sample_prob, *args, **kwargs):
-        '''
-        For a given user, sample its queries.
-        :param data_stream:
-        :param sample_sources: name of query mask
-        :param sample_prob:
-        :param kwargs:
-        :return:
+    def __init__(self, data_stream, sample_prob, sample_source='query_mask', seed=1234, *args, **kwargs):
+        '''For a given user, sample its queries.
+
+        :param data_stream: fuel.Datastream
+        :param sample_sources: str
+                Name of the sampled source.
+        :param sample_prob: float (0.,1.)
+                Sample out sample_prob * size(queries) queries
+        :param seed: int
+                Int seed for numpy.random. The seed will increment one every time the transform applied.
         '''
         super(QeurySample, self).__init__(
             data_stream, produces_examples=False, **kwargs)
+        self.seed = seed
         self.sample_source = sample_source
         self.sample_prob = sample_prob
         self._initialize()
@@ -327,14 +358,62 @@ class QeurySample(Transformer):
             if source != self.sample_source:
                 batch_with_samplings.append(source_batch)
                 continue
+            numpy.random.seed(self.seed)
             rvs = numpy.random.rand(*source_batch.shape[0:2])
+            self.seed += 1
             source_batch *= (rvs < self.sample_prob)[:,:,None]
             batch_with_samplings.append(source_batch)
         return tuple(batch_with_samplings)
 
 
+class QueryMerge(Transformer):
+    '''Merge queries of a user into bag of words'''
+    def __init__(self, data_stream, merge_source='query', *args, **kwargs):
+        '''For a given user, sample its queries.
+
+        :param data_stream: fuel.Datastream
+        :param sample_sources: str
+                Name of the sampled source.
+        :param sample_prob: float (0.,1.)
+                Sample out sample_prob * size(queries) queries
+        :param seed: int
+                Int seed for numpy.random. The seed will increment one every time the transform applied.
+        '''
+        super(QueryMerge, self).__init__(
+            data_stream, produces_examples=False, **kwargs)
+        self.merge_source = merge_source
+        self._initialize()
+
+    def _initialize(self):
+        pass
+
+    def transform_batch(self, batch):
+        batch_merged = []
+        new_mask = None
+        for source, source_batch in zip(self.data_stream.sources, batch):
+            if source != self.sample_source:
+                batch_merged.append(source_batch)
+                continue
+            queries = []
+            masks = batch[self.data_stream.sources.index(self.merge_source+'_mask')]
+            max_len = 0
+            for i in range(len(source_batch)):
+                words = numpy.unique(source_batch[i][masks[i] > 0.])
+                if len(words) > max_len:
+                    max_len = len(words)
+                queries.append(words)
+            new_batch = numpy.zeros((len(source_batch), max_len), dtype=source_batch.dtype)
+            new_mask = numpy.zeros((len(source_batch), max_len), dtype=masks.dtype)
+            for i in range(len(source_batch)):
+                new_batch[i][0:len(queries[i])] = queries[i]
+                new_mask[i][0:len(queries[i])] = 1.
+            batch_merged.append(new_batch)
+        batch_merged[self.data_stream.sources.index[self.merge_source+'_mask']] = new_mask
+        return tuple(batch_merged)
+
+
 class BaggedQuerySample(Transformer):
-    def __init__(self, data_stream, sample_source, sample_prob, sample_source_mask = None, for_type='train', *args, **kwargs):
+    def __init__(self, data_stream, sample_source, sample_prob, sample_source_mask = None, *args, **kwargs):
         '''
         For a given user, sample its queries and bag words of sampled queries
         :param data_stream:
@@ -350,7 +429,6 @@ class BaggedQuerySample(Transformer):
             sample_source_mask = sample_source + '_mask'
         self.sample_source_mask = sample_source_mask
         self.sample_prob = sample_prob
-        self.for_type = for_type
         self._initialize()
 
     def _initialize(self):
@@ -359,17 +437,13 @@ class BaggedQuerySample(Transformer):
     def transform_batch(self, batch):
         batch_with_samplings = []
         new_mask = None
-        dic = dict(zip(self.data_stream.sources, batch))
         for source, source_batch in zip(self.data_stream.sources, batch):
             if source != self.sample_source:
                 batch_with_samplings.append(source_batch)
                 continue
-            query_mask = dic[self.sample_source_mask]
-            if self.for_type == 'train':
-                rvs = numpy.random.rand(*source_batch.shape[0:2])
-                masks = query_mask * (rvs < self.sample_prob)[:,:,None]
-            else:
-                masks = query_mask
+            query_mask = batch[self.data_stream.sources.index(self.sample_source_mask)]
+            rvs = numpy.random.rand(*source_batch.shape[0:2])
+            masks = query_mask * (rvs < self.sample_prob)[:,:,None]
             queries = []
             max_len = 0
             for i in range(len(source_batch)):
@@ -423,7 +497,6 @@ class OutputNoise(Transformer):
             label_num /= label_num.sum()
             label_num *= self.noise_probs[label]
             self.cum_lable_nums.append(label_num.cumsum())
-
 
     @property
     def sources(self):
