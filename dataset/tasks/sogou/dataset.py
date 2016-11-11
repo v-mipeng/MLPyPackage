@@ -11,23 +11,16 @@ from pml.dataset.tasks.sogou import SequentialScheme, ShuffledExampleScheme, Seq
 from pml.dataset.tasks.sogou import DataStream, Batch, Mapping, MatrixPadding, SortMapping, Unpack
 from pml.dataset.tasks.sogou import QuerySample, QueryMerge, TokenSample, OutputNoise, MatrixPadding
 from pml.dataset.tasks.sogou import _balanced_batch_helper
-from pml.dataset.base import AbstractDocClassificationDataset
+from pml.dataset.base import AbstractDocClassificationDataset, Map, Process_before_map, Process_after_map
 
 
-class SingleTaskDataset(AbstractDocClassificationDataset):
-    def __init__(self, config, task_name, true_label2pred_label = None, *args, **kwargs):
-        super(SingleTaskDataset, self).__init__(*args, **kwargs)
+class BaseDataset(AbstractDocClassificationDataset):
+    def __init__(self, config, *args, **kwargs):
+        super(BaseDataset, self).__init__(*args, **kwargs)
         self.config = config
-        self.task_name = task_name
-        self.true_label2pred_label = true_label2pred_label
-        self.provide_train_sources = ('id', task_name, 'query')
         self.provide_test_sources = ('id', 'query',)
         self.need_mask_sources = {'query': theano.config.floatX}
         self.compare_source = 'query'
-
-    @property
-    def label_num(self):
-        return len(self.true_label2pred_label)
 
     @property
     def token_num(self):
@@ -44,72 +37,83 @@ class SingleTaskDataset(AbstractDocClassificationDataset):
         if param_load_from is None:
             if hasattr(self.config, 'dataset_param_load_from'):
                 param_load_from = self.config.dataset_param_load_from
-        super(SingleTaskDataset, self).initialize(param_load_from)
+        super(BaseDataset, self).initialize(param_load_from)
 
-    def reset(self,preserved_attributes = None, *args, **kwargs):
-        preserved_attrs = {'config','task_name','_true_label2pred_label','_pred_label2true_label',
-                          'provide_train_sources','provide_test_sources', 'need_mask_sources',
-                          'compare_source'}
-        super(SingleTaskDataset, self).reset(preserved_attrs)
+    def reset(self, preserved_attributes=None, *args, **kwargs):
+        preserved_attrs = {'config', 'task_name', '_true_label2pred_label', '_pred_label2true_label',
+                           'provide_train_sources', 'provide_test_sources', 'need_mask_sources',
+                           'compare_source'}
+        super(BaseDataset, self).reset(preserved_attrs)
 
     def save(self, param_save_to=None):
         if param_save_to is None:
             if hasattr(self.config, 'dataset_param_save_to'):
                 param_save_to = self.config.dataset_param_save_to
-        super(SingleTaskDataset, self).save(param_save_to)
+        super(BaseDataset, self).save(param_save_to)
+
+
+class SingleTaskDataset(BaseDataset):
+    def __init__(self, config, task_name, true_label2pred_label=None, *args, **kwargs):
+        super(SingleTaskDataset, self).__init__(*args, **kwargs)
+        self.config = config
+        self.task_name = task_name
+        self.true_label2pred_label = true_label2pred_label
+        self.provide_train_sources = ('id', task_name, 'query')
+        self.provide_test_sources = ('id', 'query',)
+        self.need_mask_sources = {'query': theano.config.floatX}
+        self.compare_source = 'query'
+
+    @property
+    def label_num(self):
+        return len(self.true_label2pred_label)
+
+    def _process_before_mapping_for_train(self, raw_dataset):
+        if self.true_label2pred_label is None:
+            self.true_label2pred_label = self._construct_label_mapping(raw_dataset[self.task_name])
+        return raw_dataset
+
+    @Map
+    def _map(self, raw_dataset, for_type='train'):
+        ids = np.array(raw_dataset['id'])
+
 
     def _map_for_train(self, raw_dataset):
         ids = np.array(raw_dataset['id'])
-        idxes, labels = self._map_label(raw_dataset)
-        # You should filter sparse word in the pre-process step
+        idxes, labels = self._map_labels(raw_dataset[self.task_name])
         queries_per_user = np.array(
             [[np.array(list(set([self._get_token_index(token) for token in query])),
                           dtype=self.config.int_type)   # Construct one hot representation
               for query in queries] for queries in raw_dataset['query']], dtype='O')
         ids = ids[idxes]
         queries_per_user = queries_per_user[idxes]
-        self._train_sample_num = len(ids)
         return [ids, labels, queries_per_user]
 
     def _map_for_valid(self, raw_dataset):
-        ids = np.array(raw_dataset['id'])
-        idxes, labels = self._map_label(raw_dataset)
-        # You should filter sparse word in the pre-process step
-        queries_per_user = np.array(
-            [[np.array(list(set([self.token2index(token) for token in query if token in self.token2index])),
-                       dtype=self.config.int_type)
-              for query in queries] for queries in raw_dataset['query']], dtype='O')
+        ids, queries_per_user = self._map_for_test(raw_dataset)
+        idxes, labels = self._map_labels(raw_dataset[self.task_name])
         ids = ids[idxes]
         queries_per_user = queries_per_user[idxes]
-        self._valid_sample_num = len(ids)
         return [ids, labels, queries_per_user]
 
     def _map_for_test(self, raw_dataset):
         ids = np.array(raw_dataset['id'])
-        # You should filter sparse word in the pre-process step
         queries_per_user = np.array(
-            [[np.array(list(set([self.token2index(token) for token in query if token in self.token2index])),
+            [[np.array(list(set([self.token2index[token] for token in query if token in self.token2index])),
                        dtype=self.config.int_type)
               for query in queries] for queries in raw_dataset['query']], dtype='O')
-        self._test_sample_num = len(ids)
-        return [ids, queries_per_user]
+        return (ids, queries_per_user)
 
-    def _map_label(self, raw_dataset):
-        if self.true_label2pred_label is None:
-            labels = np.array([self._get_label(label) for label in raw_dataset[self.task_name]])
-            idxes = np.arange(len(labels))
-        else:
-            idxes, labels = zip(*[(i, self.true_label2pred_label[label])
-                                  for i, label in enumerate(raw_dataset[self.task_name])
-                                  if label in self.true_label2pred_label])
-            idxes = np.array(idxes)
-            labels = np.array(labels)
-        return idxes, labels
+    def _map_labels(self, labels):
+        ts = [(idx, self.true_label2pred_label[label]) for idx, label in enumerate(labels)
+              if label in self.true_label2pred_label]
+        idxes, used_labels = zip(*ts)
+        idxes = np.array(idxes)
+        used_labels = np.array(used_labels)
+        return idxes, used_labels
 
-    def _get_label(self, label):
-        if self.true_label2pred_label is None:
-            self.true_label2pred_label = {}
-        return self.true_label2pred_label.setdefault(label, len(self.true_label2pred_label))
+    def _construct_label_mapping(self, labels):
+        unique_labels = np.unique(labels)
+        return dict(zip(unique_labels, range(len(unique_labels))))
 
     def _get_token_index(self, token):
         if self.true_label2pred_label is None:
@@ -117,9 +121,18 @@ class SingleTaskDataset(AbstractDocClassificationDataset):
         return self.token2index.setdefault(token, len(self.token2index))
 
     def _process_after_mapping_for_train(self, dataset):
-        labels = dataset[self.task_name]
+        labels = dataset[0]
         unique_labels, counts = np.unique(labels, return_counts=True)
         self.label2freq = dict(zip(unique_labels, counts))
+        self._train_sample_num = len(labels)
+        return dataset
+
+    def _process_after_mapping_for_valid(self, dataset):
+        self._valid_sample_num = len(dataset[0])
+        return dataset
+
+    def _process_after_mapping_for_test(self, dataset):
+        self._test_sample_num = len(dataset[0])
         return dataset
 
     def _construct_shuffled_stream(self, dataset, for_type='train'):
@@ -193,13 +206,10 @@ class MultiTaskDataset(SingleTaskDataset):
         :param config:
         :param task_names: list or tuple
                 List of task names, e.g., age, gender and edu
-        :param true_label2pred_labels: list of dict
-                
-        :param args:
-        :param kwargs:
+        :param true_label2pred_labels: dict of dicts
         :return:
         '''
-        super(SingleTaskDataset, self).__init__(*args, **kwargs)
+        super(SingleTaskDataset, self).__init__(config, task_name = None, *args, **kwargs)
         self.config = config
         self.task_names = task_names
         self.true_label2pred_labels = true_label2pred_labels
@@ -212,34 +222,14 @@ class MultiTaskDataset(SingleTaskDataset):
     def label_num(self):
         return len(self.true_label2pred_label)
 
-    @property
-    def token_num(self):
-        return len(self.token2index)
+    def get_label_num(self, task_name):
+        return self.true_label2pred_labels[task_name]
 
-    @property
-    def token2index(self):
-        if hasattr(self, '_token2index'):
-            return self._token2index.copy()
-        else:
-            return None
+    def _process_before_mapping_for_train(self, raw_dataset):
+        if self.true_label2pred_label is None:
+            self.true_label2pred_label = self._construct_label_mapping(raw_dataset[self.task_name])
+        return raw_dataset
 
-    def initialize(self, param_load_from=None, *args, **kwargs):
-        if param_load_from is None:
-            if hasattr(self.config, 'dataset_param_load_from'):
-                param_load_from = self.config.dataset_param_load_from
-        super(SingleTaskDataset, self).initialize(param_load_from)
-
-    def reset(self, preserved_attributes=None, *args, **kwargs):
-        preserved_attrs = {'config', 'task_name', '_true_label2pred_label', '_pred_label2true_label',
-                           'provide_train_sources', 'provide_test_sources', 'need_mask_sources',
-                           'compare_source'}
-        super(SingleTaskDataset, self).reset(preserved_attrs)
-
-    def save(self, param_save_to=None):
-        if param_save_to is None:
-            if hasattr(self.config, 'dataset_param_save_to'):
-                param_save_to = self.config.dataset_param_save_to
-        super(SingleTaskDataset, self).save(param_save_to)
 
     def _map_for_train(self, raw_dataset):
         ids = np.array(raw_dataset['id'])
@@ -278,20 +268,23 @@ class MultiTaskDataset(SingleTaskDataset):
         return [ids, queries_per_user]
 
     def _map_label(self, raw_dataset):
-        if self.true_label2pred_label is None:
-            labels = np.array([self._get_label(label) for label in raw_dataset[self.task_name]])
-            idxes = np.arange(len(labels))
-        else:
-            idxes, labels = zip(*[(i, self.true_label2pred_label[label])
-                                  for i, label in enumerate(raw_dataset[self.task_name])
-                                  if label in self.true_label2pred_label])
-            idxes = np.array(idxes)
-            labels = np.array(labels)
+        for task_name in self.task_names:
+            if self.true_label2pred_labels.get(task_name, None) is None:
+                self.true_label2pred_labels[task_name] = {}
+                labels = np.array([self._get_label(label) for label in raw_dataset[task_name]])
+                idxes = np.arange(len(labels))
+            else:
+                idxes, labels = zip(*[(i, self.true_label2pred_label[label])
+                                      for i, label in enumerate(raw_dataset[self.task_name])
+                                      if label in self.true_label2pred_label])
+                idxes = np.array(idxes)
+                labels = np.array(labels)
+
         return idxes, labels
 
-    def _get_label(self, label):
+    def _get_label(self, label, task_name, *args):
         if self.true_label2pred_label is None:
-            self.true_label2pred_label = {}
+            pass
         return self.true_label2pred_label.setdefault(label, len(self.true_label2pred_label))
 
     def _get_token_index(self, token):

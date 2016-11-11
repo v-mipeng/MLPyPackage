@@ -14,14 +14,68 @@ from fuel.streams import DataStream
 from fuel.transformers import Batch, Padding, Unpack
 
 
+def Map(func):
+    def deco_map(self, raw_dataset, for_type='train'):
+        raw_dataset = func(self, raw_dataset, for_type)
+        return AbstractDataset._map(self, raw_dataset, for_type)
+    return deco_map
+
+
+def Process_after_map(func):
+    def deco_process_after_map(self, dataset, for_type='train'):
+        dataset = func(self, dataset, for_type)
+        return AbstractDataset(self, dataset, for_type)
+    return deco_process_after_map
+
+
+def Process_before_map(func):
+    def deco_process_before_map(self, raw_dataset, for_tyep='train'):
+        raw_dataset = func(self, raw_dataset, for_tyep)
+        return AbstractDataset(self, raw_dataset, for_tyep)
+    return deco_process_before_map
+
+
 class AbstractDataset(object):
     '''Convert preprocessed raw dataset into stream and extract necessary dataset information
 
-    The work this module should do is about:
-        1.map symbolic features into mathematical representation
-        2.map symbolic labels into mathematical representation
-        3.statistic feature dimension, label dimension, training validation and testing number
-        4.construct fuel.stream with necessary transformation
+    Initialize dataset:
+        1. from file: invoke Initialize() method given file path to load dataset information
+        2. pass training dataset first: invoke get_train_datastream() method given training
+           raw dataset
+
+        Note: self.initialized is an indicator of weather the dataset have been initialized.
+        The above two methods will set it to be True if initializing successfully.
+        You cannot process validation or testing dataset without initialization. The
+
+    Save dataset:
+        Invoke save() method given file path to save.
+        This method will save all the attributes of current instance into given file with cPickle.dump.
+
+    Reset dataset:
+        By default, some dataset information will not be erased even you deal with another training dataset
+        by invoking get_train_stream() method again. To make sure you can extract exactly new dataset information,
+        you can make a new instance or invoke reset() method given attribute names you want to preserve. This will
+        erase all the attributes of current instance except those you want to preserve.
+
+    Process dataset:
+        It offer get_train_stream(), get_valid_stream() and get_test_stream() methods for dealing with training,
+        validation and testing dataset. You should define the sources provided by training or validation stream in
+        self.provide_train_sources and those by testing stream in self.provide_test_sources.
+        Note: you should make sure the dimension of each field of the raw dataset to be the same, otherwise an
+        error will raise.
+
+    What subclass should implement:
+
+        1. Implement _map[_for_<train|valid|test>] methods to convert feature representation. Do common work for
+        training, valid and testing dataset in _map method and do specific work in corresponding methods
+        2. If you want to do some work before converting feature representation,
+        invoke: _process_before_mapping[_for_<train|valid|test>]. All the type of dataset will be processed by
+        _process_before_mapping() method
+        3. If you want to do some work after converting feature representation,
+        invoke: _process_after_mapping[_for_<train|valid|test>]. All the type of dataset will be processed by
+        _process_after_mapping() method
+        4. Add some transformation to the stream in _construct_shuffled_stream method and _construct_sequential_stream
+        methods
 
     '''
     def __init__(self, *args, **kwargs):
@@ -66,63 +120,12 @@ class AbstractDataset(object):
             return 0
 
     @abstractmethod
-    def initialize(self, param_load_from=None, *args, **kwargs):
-        '''Initialize dataset information, like word table.
-
-
-        :param param_load_from: str
-                The file path from which to load the dataset parameter. The parameters stored
-                in the file should be dumped by cPickle with cPickle.dump(obj, file).
-                If it is None (default), dataset information should extracted from training data set.
-        :exception: NotImplementedError
-                If param_load_from is None, raise NotImplementedError. Subclass may obtain
-                param_load_from from config object.
-        '''
-        try:
-            if param_load_from is None:
-                raise ValueError('param_load_from should not be None!')
-            elif not os.path.exists(param_load_from):
-                raise IOError('File:{0} does not exist!'.format(param_load_from))
-            else:
-                self._load_parameter(param_load_from)
-            self.initialized = True
-        except Exception as e:
-            self.initialized = False
-            raise e
-
-    @abstractmethod
-    def save(self, param_save_to=None):
-        if param_save_to is None:
-            raise ValueError('param_save_to should not be None!')
-        elif not os.path.exists(os.path.dirname(param_save_to)):
-            os.makedirs(os.path.dirname(param_save_to))
-        else:
-            pass
-        self._save_parameter(param_save_to)
-
-    @abstractmethod
-    def reset(self, preserved_attributes=None):
-        '''Reset all the dataset parameters, except those in reserved_attributes, to None
-
-        :param preserved_attributes: set
-                Set of attributes to be preserved during resetting
-        '''
-        preserved_attrs = {'provide_train_sources', 'provide_test_sources'}
-        if preserved_attrs is not None:
-            preserved_attrs.update(preserved_attrs)
-        for attr in self.__dict__.keys():
-            if attr not in preserved_attrs:
-                setattr(self, attr, None)
-        self.initialized = False
-
-    @abstractmethod
     def _process_before_mapping_for_train(self, raw_dataset):
         '''Process training raw dataset before mapping samples into integer representation
 
-         This method is designed to do pre-processing, e.g. statistic word frequency, on raw dataset
-         on training raw dataset.
+         This method is designed to do pre-processing, e.g. statistic word frequency on training dataset.
         :param raw_dataset: list, tuple or numpy.ndarray
-                A contaniner of training samples
+                A container of training samples
         :return: list
                 A list of processed samples
         '''
@@ -161,67 +164,35 @@ class AbstractDataset(object):
         :param raw_dataset: dict
                     This stores the attributes of training samples. Every item corresponds an attribute and
                     the length of each attribute should be the same.
-        :return: list
-                A list of numpy.ndarray or lists. Each element corresponds, in order, one field of the dataset defined in
-                self.provide_sources.
+        :return: tuple
+                A tuple of numpy.ndarray. Each element corresponds, in order, one field of the dataset defined in
+                self.provide_train_sources.
         '''
         raise NotImplementedError
 
     @abstractmethod
     def _map_for_valid(self, raw_dataset):
-        '''Map validation raw dataset into integer representation dataset
-        
-        :param raw_dataset: dict
-                This stores the attributes of training samples. Every item corresponds an attribute and
-                the length of each attribute should be the same.
-        :param for_type: str
-                Indicator of the usage of this dataset: 'train','valid' or 'test'
-        :return: list
-                A list of numpy.ndarray or lists. Each element corresponds, in order, one field of the dataset defined in
-                self.provide_sources.
-        '''
         raise NotImplementedError
 
     @abstractmethod
     def _map_for_test(self, raw_dataset):
-        '''Map training raw dataset into integer representation dataset
-        
-        :param raw_dataset: dict
-                This stores the attributes of training samples. Every item corresponds an attribute and
-                the length of each attribute should be the same.
-        :return: list
-                A list of numpy.ndarray or lists. Each element corresponds, in order, one field of the dataset defined in
-                self.provide_sources.
-        '''
         raise NotImplementedError
 
     @abstractmethod
     def _process_after_mapping_for_train(self, dataset):
         '''Process mapped training dataset
-
-        :return: list
-                A new list of dataset.
         '''
+        self._train_sample_num = len(dataset[0])
         return dataset
 
     @abstractmethod
     def _process_after_mapping_for_valid(self, dataset):
-        '''Process mapped valid dataset
-
-        :param dataset:
-        :return: list
-                A new list of dataset.
-        '''
+        self._valid_sample_num = len(dataset[0])
         return dataset
 
     @abstractmethod
     def _process_after_mapping_for_test(self, dataset):
-        '''Process mapped test dataset
-
-        :param dataset:
-        :return: list
-                A new list of dataset.
-        '''
+        self._test_sample_num = len(dataset[0])
         return dataset
 
     @abstractmethod
@@ -254,16 +225,6 @@ class AbstractDataset(object):
     @abstractmethod
     def _construct_sequential_stream(self, dataset, for_type = 'train'):
         '''Construc a sequential stream from an IndexableDataset object
-
-        Subclass should add transformation on the stream, e.g.,
-                1.Sort samples by size
-                2.Batch dataset
-                3.Add mask on samples
-        :param dataset: fuel.IndexableDataset
-                This is constructed by self._construct_dataset method.
-        :return: fuel.stream.Datastream
-                An object of fuel.stream.Datastream with SequentialExampleScheme
-                A fuel sequential stream with basic transformations,
         '''
         it = SequentialExampleScheme(dataset.num_examples)
         stream = DataStream(dataset, iteration_scheme=it)
@@ -273,6 +234,53 @@ class AbstractDataset(object):
         # for source in self.need_mask_sources.iteritems():
         #     stream = Padding(stream, mask_sources=[source[0]], mask_dtype=source[1])
         return stream
+
+    def initialize(self, param_load_from):
+        '''Initialize dataset information, like word table.
+
+
+        :param param_load_from: str
+                The file path from which to load the dataset parameter. The parameters stored
+                in the file should be dumped by cPickle with cPickle.dump(obj, file).
+                If it is None (default), dataset information should extracted from training data set.
+        :exception: NotImplementedError
+                If param_load_from is None, raise NotImplementedError. Subclass may obtain
+                param_load_from from config object.
+        '''
+        try:
+            if param_load_from is None:
+                raise ValueError('param_load_from should not be None!')
+            elif not os.path.exists(param_load_from):
+                raise IOError('File:{0} does not exist!'.format(param_load_from))
+            else:
+                self._load_parameter(param_load_from)
+            self.initialized = True
+        except Exception as e:
+            self.initialized = False
+            raise e
+
+    def save(self, param_save_to):
+        if param_save_to is None:
+            raise ValueError('param_save_to should not be None!')
+        elif not os.path.exists(os.path.dirname(param_save_to)):
+            os.makedirs(os.path.dirname(param_save_to))
+        else:
+            pass
+        self._save_parameter(param_save_to)
+
+    def reset(self, preserved_attributes=None):
+        '''Reset all the dataset parameters, except those in reserved_attributes, to None
+
+        :param preserved_attributes: set
+                Set of attributes to be preserved during resetting
+        '''
+        preserved_attrs = {'provide_train_sources', 'provide_test_sources'}
+        if preserved_attrs is not None:
+            preserved_attrs.update(preserved_attrs)
+        for attr in self.__dict__.keys():
+            if attr not in preserved_attrs:
+                setattr(self, attr, None)
+        self.initialized = False
 
     def _load_parameter(self, param_load_from):
         '''Load dataset from a pickled file
@@ -285,8 +293,8 @@ class AbstractDataset(object):
         if param_load_from is None or not os.path.exists(param_load_from):
             raise Exception('Cannot load dataset from {0}'.format(param_load_from))
         with open(param_load_from, 'rb') as f:
-            obj = cPickle.load(f)
-            for attr, value in obj.__dict__.iteritems():
+            attributes = cPickle.load(f)
+            for attr, value in attributes.iteritems():
                 setattr(self, attr, value)
             self.initialized = True
 
@@ -296,8 +304,8 @@ class AbstractDataset(object):
         :param param_save_to: str
                 File path to dump current object.
         '''
-        with open(param_save_to, 'w+') as f:
-            cPickle.dump(self, f)
+        with open(param_save_to, 'wb+') as f:
+            cPickle.dump(self.__dict__, f)
 
     def get_train_stream(self, raw_dataset, it='shuffled'):
         '''Construct a fuel.stream object for training from the raw dataset.
@@ -306,7 +314,7 @@ class AbstractDataset(object):
         representation, mapping true labels and predicted labels, extracting training data information,
         padding and shuffling samples and so on.
 
-        :param raw_dataset: list or tuple of ndarray
+        :param raw_dataset: dic
                     This stores the attributes of training samples. Every item corresponds an attribute and
                     the length of each attribute should be the same.
                     e.g., raw_dataset = [np.array(ids),np.array(ages),np.array(genders)] and
@@ -329,22 +337,6 @@ class AbstractDataset(object):
 
     def get_valid_stream(self, raw_dataset, it='sequential'):
         '''Construct a fuel.stream object for validation from the raw dataset.
-
-        It should do some processings on the raw dataset, like mapping string type of words into integer
-        representation, extracting training data information, padding and shuffling samples and so on.
-
-        :param raw_dataset: list or tuple
-                This stores the attributes of training samples. Every item corresponds an attribute and
-                the length of each attribute should be the same.
-                e.g., raw_dataset = [list_of_ids,list_of_ages,list_of_genders] and
-                len(list_of_ids) == len(list_of_ages) == len(list_of_genders)
-        :param raw_dataset: list or tuple of ndarray
-                    This stores the attributes of training samples. Every item corresponds an attribute and
-                    the length of each attribute should be the same.
-                    e.g., raw_dataset = [np.array(ids),np.array(ages),np.array(genders)] and
-                    len(ids) == len(ages) == len(genders)
-        :return: fuel.stream
-                This is typically fed into the validation processing.
         '''
         if self.initialized:
             return self._get_stream(raw_dataset, it, for_type='valid')
@@ -353,21 +345,6 @@ class AbstractDataset(object):
 
     def get_test_stream(self, raw_dataset, it='sequential'):
         '''Construct a fuel.stream object for test from the raw dataset.
-        
-        It should do some processing on the raw dataset, like mapping string type of words into integer
-        representation, extracting training data information, padding and shuffling samples and so on.
-
-        :param raw_dataset: list or tuple of ndarray
-                    This stores the attributes of training samples. Every item corresponds an attribute and
-                    the length of each attribute should be the same.
-                    e.g., raw_dataset = [np.array(ids),np.array(ages),np.array(genders)] and
-                    len(ids) == len(ages) == len(genders)
-        :param it: str
-                Assign the iteration schema used in fuel.stream. The default is 'sequential' which will keep
-                the order of samples. If it is 'shuffled', samples will be shuffled before feeding into test.
-                This option is usually used during training with SGD.
-
-        :return: fuel.stream
                 This is typically fed into the test processing.
         '''
         if self.initialized:
@@ -393,6 +370,17 @@ class AbstractDataset(object):
             raise ValueError('it should be "shuffled" or "sequential"!')
 
     def _map(self, raw_dataset, for_type):
+        '''Map raw dataset into integer representation dataset
+
+        :param raw_dataset: dict
+                This stores the attributes of training samples. Every item corresponds an attribute and
+                the length of each attribute should be the same.
+        :param for_type: str
+                Indicator of the usage of the raw dataset
+        :return: tuple
+                A tuple of numpy.ndarray. Each element corresponds, in order, one field of the dataset defined in
+                self.provide_train_sources.
+        '''
         if for_type == 'train':
             return self._map_for_train(raw_dataset)
         elif for_type == 'valid':
@@ -426,8 +414,8 @@ class AbstractDataset(object):
     def _process_after_mapping(self, dataset, for_type='train'):
         '''Process mapped dataset
 
-        :param dataset: list
-                List of numpy.ndarray or list. Each element of the list corresponds a field of the dataset
+        :param dataset: tuple
+                Tuple of numpy.ndarray or list. Each element of the list corresponds a field of the dataset
                 defined in self.provide_souces
         :param for_type: str
                 Indicator of the usage of this dataset: 'train','valid' or 'test'
@@ -447,7 +435,7 @@ class AbstractDataset(object):
         '''Construct an fuel indexable dataset.
 
         Every field corresponds to the name.
-        :param dataset: A list of numpy.ndarray
+        :param dataset: A tuple of numpy.ndarray
         :return: instance of IndexableDataset
         '''
         if for_type == 'train' or for_type == 'valid':
