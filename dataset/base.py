@@ -1,38 +1,148 @@
-import os
-import errno
 import cPickle
-from collections import Iterable
-from warnings import warn
+import itertools
+import os
 from abc import abstractmethod, abstractproperty
 from collections import OrderedDict
 
-import theano
 import numpy as np
 from fuel.datasets import IndexableDataset
-from fuel.schemes import ShuffledExampleScheme, ConstantScheme, SequentialScheme, SequentialExampleScheme
+from fuel.schemes import ShuffledExampleScheme, SequentialExampleScheme
 from fuel.streams import DataStream
-from fuel.transformers import Batch, Padding, Unpack
 
 
-def Map(func):
-    def deco_map(self, raw_dataset, for_type='train'):
-        raw_dataset = func(self, raw_dataset, for_type)
-        return AbstractDataset._map(self, raw_dataset, for_type)
-    return deco_map
+class RawDataset(object):
+    '''Raw dataset container
 
+    '''
+    def __init__(self, raw_dataset):
+        self.raw_dataset = raw_dataset
+        self.check_dim()
 
-def Process_after_map(func):
-    def deco_process_after_map(self, dataset, for_type='train'):
-        dataset = func(self, dataset, for_type)
-        return AbstractDataset(self, dataset, for_type)
-    return deco_process_after_map
+    def __getitem__(self, source):
+        return self.raw_dataset[source]
 
+    def __setitem__(self, key, value):
+        self.raw_dataset[key] = value
 
-def Process_before_map(func):
-    def deco_process_before_map(self, raw_dataset, for_tyep='train'):
-        raw_dataset = func(self, raw_dataset, for_tyep)
-        return AbstractDataset(self, raw_dataset, for_tyep)
-    return deco_process_before_map
+    def __len__(self):
+        return self.sample_num
+
+    def __iter__(self):
+        '''Iterate over raw dataset by sample over fields defined in self.iter_order
+
+        The returned fields are ordered by the order of self.iter_order
+        '''
+        iters = (iter(self.raw_dataset[source]) for source in self.iter_order)
+        return itertools.izip(*iters)
+
+    @property
+    def iter_order(self):
+        if hasattr(self, '_iter_order'):
+            return self._iter_order
+        else:
+            return self.sources
+
+    @iter_order.setter
+    def iter_order(self, value):
+        '''Set source order to iterate.
+
+        :param value: list of str
+                The source names to iterate over. The returned fields are ordered by given name order
+        '''
+        self._iter_order = value
+
+    @property
+    def sources(self):
+        return self.raw_dataset.keys()
+
+    @property
+    def sample_num(self):
+        return len(self.raw_dataset.values()[0])
+
+    def keys(self):
+        return self.raw_dataset.keys()
+
+    def values(self):
+        return self.raw_dataset.values()
+
+    def check_dim(self):
+        '''Check dimension of each field of the dataset
+
+        If field dimensions mismatch, raise ValueError
+        '''
+        dim = len(self.raw_dataset.values()[0])
+        if not all([len(field) == dim for field in self.raw_dataset.values()]):
+            raise ValueError('Dimensions of raw dataset fields mismatch!')
+
+    def cross_split(self, proportion, shuffled=True, seed=None):
+        '''Split dataset for cross validation
+
+        Split dataset into part for training and that for validation multiple times.
+        Each time the validation dataset is unique without any samples overriding.
+        :param proportion: float
+                Validation proportion
+                size(validation) = portion * size(all dataset)
+        :param shuffled: bool
+                Indicator if shuffle the dataset before splitting, default is True
+        :param seed: int
+                Seed for shuffled the dataset. If shuffled is True and no seed given or
+                set to be None (default), the dataset will be shuffled randomly.
+        :return: tuple of instances of RawDataset
+                Training dataset and testing dataset
+        '''
+        sample_num = self.sample_num
+        valid_num = int(sample_num * proportion)
+        idxes = np.arange(sample_num)
+        if shuffled:
+            if seed is not None:
+                np.random.seed(seed)
+            np.random.shuffle(idxes)
+
+        for i in range(sample_num / valid_num):
+            train_raw_dataset = {}
+            valid_raw_dataset = {}
+            train_idxes = np.concatenate([idxes[:i * valid_num],
+                                          idxes[(i + 1) * valid_num:]])
+            valid_idxes = idxes[i * valid_num:(i + 1) * valid_num]
+            for key, value in self.raw_dataset.items():
+                train_raw_dataset[key] = value[train_idxes]
+                valid_raw_dataset[key] = value[valid_idxes]
+            yield (RawDataset(train_raw_dataset), RawDataset(valid_raw_dataset))
+
+    def split(self, proportion, shuffled=True, seed=None):
+        '''Split the dataset into two parts
+
+        Split the dataset into two parts with the first part consisting 'proportion' that of
+        the original dataset.
+        This operation usually used to split dataset into training and validation parts. Of course,
+        you can use this method to split out validation and testing parts.
+
+        :param proportion: float
+                The proportion of the first part
+                size(first part) = portion * size(all dataset)
+        :param shuffled: bool
+                Indicator if shuffle the dataset before splitting, default is True
+        :param seed: int
+                Seed for shuffled the dataset. If shuffled is True and no seed given or
+                set to be None (default), the dataset will be shuffled randomly.
+        :return: tuple of instances of RawDataset
+                Training dataset and testing dataset
+        '''
+        sample_num = self.sample_num
+        part_one_num = int(sample_num * proportion)
+        idxes = np.arange(sample_num)
+        if shuffled:
+            if seed is not None:
+                np.random.seed(seed)
+            np.random.shuffle(idxes)
+        idxes_one = idxes[:part_one_num]
+        idxes_two = idxes[part_one_num:]
+        raw_dataset_one = {}
+        raw_dataset_two = {}
+        for key, value in self.raw_dataset.items():
+            raw_dataset_one[key] = value[idxes_one]
+            raw_dataset_two[key] = value[idxes_two]
+        return (RawDataset(raw_dataset_one), RawDataset(raw_dataset_two))
 
 
 class AbstractDataset(object):
@@ -78,7 +188,7 @@ class AbstractDataset(object):
         methods
 
     '''
-    def __init__(self, *args, **kwargs):
+    def __init__(self):
         self.provide_train_sources = None
         self.provide_test_sources = None
         self.initialized = False
@@ -510,3 +620,22 @@ class AbstractDocClassificationDataset(AbstractClassificationDataset):
         raise NotImplementedError
 
 
+def test_raw_dataset():
+    sources = ['name', 'age', 'gender']
+    values = [np.random.rand(10), np.random.rand(10), np.random.rand(10)]
+    raw_dataset = RawDataset(dict(zip(sources, values)))
+    for train, valid in raw_dataset.cross_split(proportion=0.2, shuffled=False):
+        pass
+    print(len(raw_dataset))
+    print(raw_dataset.sources)
+    raw_dataset.iter_order = sources
+    for sample in raw_dataset:
+        print(sample)
+    print('\n')
+    raw_dataset.iter_order = raw_dataset.sources
+    for sample in raw_dataset:
+        print(sample)
+
+
+if __name__ == '__main__':
+    test_raw_dataset()

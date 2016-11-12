@@ -1,105 +1,144 @@
-'''Read raw dataset from disk
+'''Read raw dataset from disk with pandas
 
-This module should provide source name and raw dataset
+We do this work based on pandas. It provides many useful and fast file parser.
+The loaded dataset is converted into a RawDataset object.
 '''
-import numpy as np
+
+import pandas as pd
+
+from pml.dataset.base import RawDataset
 
 
-class AbstractReader(object):
-    def __init__(self, read_from, sources):
-        '''Read raw dataset from file
+def reade_csv(read_from, names, sep='\t',usecols=None, **kwargs):
+    '''Read raw dataset with pandas
 
-        :param read_from: str
-                File path of the dataset
-        :param sources: list of str
-                List of names of the features of a sample. For a sample, it may contain
-                multiple fields, like for a user may contain age, gender and some other
-                fields.
-        '''
-        self._read_from = read_from
-        self._sources = sources
-        self._sample_num = 0
-        self._raw_dataset = None
+    :param read_from: str
+            File name to read data from
+    :param names:list of str
+            Name of each fields
+    :param sep : str, default {default}
+            Delimiter to use. If sep is None, will try to automatically determine
+            this. Separators longer than 1 character and different from '\s+' will be
+            interpreted as regular expressions, will force use of the python parsing
+            engine and will ignore quotes in the data. Regex example: '\\r\\t'
+    :param usecols : array-like, default None
+            Return a subset of the columns. All elements in this array must either
+            be positional (i.e. integer indices into the document columns) or strings
+            that correspond to column names provided either by the user in `names` or
+            inferred from the document header row(s). For example, a valid `usecols`
+            parameter would be [0, 1, 2] or ['foo', 'bar', 'baz']. Using this parameter
+            results in much faster parsing time and lower memory usage.
+    :param kwargs:
+            Parameter to control the reading.
+            Refer pandas for more detail information
+    :return: pml.dataset.base.RawDataset
+            An instance of RawDataset
 
-    @property
-    def read_from(self):
-        return self._read_from
+    --Sample--
 
-    @read_from.setter
-    def read_from(self, value):
-        assert isinstance(value, str)
-        self._read_from = value
+    File: word2freq.txt
+        word_one    \t      12
+        word_two    \t      23
+        word_three  \t      17
+    dataset = pd.read_csv(filepath_or_buffer='word2freq.txt', names=['word','freq'], sep='\t', usecols=None)
+            word        freq
+        0   word_one    12
+        1   word_two    23
+        2   word_three  17
+    dataset = pd.read_csv(filepath_or_buffer='word2freq.txt', names = ['word'], sep='\t', usecols=[0])
+            word
+        0   word_one
+        1   word_two
+        2   word_three
+    '''
+    dataset = pd.read_csv(filepath_or_buffer=read_from, names=names, sep=sep, usecols=usecols, error_bad_lines=False,
+                          warn_bad_lines=True, encoding='utf-8',
+                          *kwargs)
+    return RawDataset(dataset.to_dict('list'))
 
-    @property
-    def sources(self):
-        return self._sources
 
-    @sources.setter
-    def sources(self, value):
-        assert isinstance(value, list) or isinstance(value, tuple)
-        self._sources = value
+def read_excel(*args, **kwargs):
+    dataset = pd.read_excel(*args, **kwargs)
+    return RawDataset(dataset.to_dict('list'))
 
-    @property
-    def raw_dataset(self):
-        if self.raw_dataset is None:
-            self.prepare()
-        return self._raw_dataset
 
-    @raw_dataset.setter
-    def raw_dataset(self, value):
-        self._raw_dataset = value
+def read_json(*args, **kwargs):
+    """
+    Convert a JSON string to pandas object
 
-    @property
-    def sample_num(self):
-        return self._sample_num
+    Parameters
+    ----------
+    path_or_buf : a valid JSON string or file-like, default: None
+        The string could be a URL. Valid URL schemes include http, ftp, s3, and
+        file. For file URLs, a host is expected. For instance, a local file
+        could be ``file://localhost/path/to/table.json``
 
-    def prepare(self):
-        '''Prepare dataset (load dataset from file)
+    orient
 
-        User can invoke this method explicitly to read data from file with path being
-        self.read_from
-        '''
-        raw_dataset = self._read_dataset()
-        if len(raw_dataset) != len(self.sources):
-            raise Exception('Source name and value mismatch!')
-        if not all([len(field)==raw_dataset[0] for field in raw_dataset]):
-            raise Exception('Field dimension mismatch!')
-        self._sample_num = len(raw_dataset[0])
-        self.raw_dataset = dict(zip(self.sources, raw_dataset))
+        * `Series`
 
-    def cross_validation(self, portion, shuffled=True, seed=None):
-        '''Split dataset into train and validation part
+          - default is ``'index'``
+          - allowed values are: ``{'split','records','index'}``
+          - The Series index must be unique for orient ``'index'``.
 
-        :param portion: float
-                Validation portion
-                size(validation) = portion * size(all dataset)
-        :param shuffled:
-        :param seed: int
-                Seed for shuffled the dataset
-        :return: tuple
-                Training dataset and testing dataset
-        '''
-        valid_num = int(self.sample_num * portion)
-        idxes = np.arange(self.sample_num)
-        if shuffled:
-            if seed is not None:
-                np.random.seed(seed)
-            np.random.shuffle(idxes)
+        * `DataFrame`
 
-        for i in range(self.sample_num / valid_num):
-            train_raw_dataset = {}
-            valid_raw_dataset = {}
-            train_idxes = np.concatenate([idxes[:i * valid_num],
-                                         idxes[(i + 1) * valid_num:]])
-            valid_idxes = idxes[i*valid_num:(i+1)*valid_num]
-            for key, value in self.raw_dataset.items():
-                train_raw_dataset[key] = value[train_idxes]
-                valid_raw_dataset[key] = value[valid_idxes]
-            yield (train_raw_dataset, valid_raw_dataset)
+          - default is ``'columns'``
+          - allowed values are: {'split','records','index','columns','values'}
+          - The DataFrame index must be unique for orients 'index' and
+            'columns'.
+          - The DataFrame columns must be unique for orients 'index',
+            'columns', and 'records'.
 
-    def _read_dataset(self):
-        '''Read dataset from file defined in self.read_from
+        * The format of the JSON string
 
-        :return: list of numpy.ndarray
-        '''
-        raise NotImplementedError
+          - split : dict like
+            ``{index -> [index], columns -> [columns], data -> [values]}``
+          - records : list like
+            ``[{column -> value}, ... , {column -> value}]``
+          - index : dict like ``{index -> {column -> value}}``
+          - columns : dict like ``{column -> {index -> value}}``
+          - values : just the values array
+
+    typ : type of object to recover (series or frame), default 'frame'
+    dtype : boolean or dict, default True
+        If True, infer dtypes, if a dict of column to dtype, then use those,
+        if False, then don't infer dtypes at all, applies only to the data.
+    convert_axes : boolean, default True
+        Try to convert the axes to the proper dtypes.
+    convert_dates : boolean, default True
+        List of columns to parse for dates; If True, then try to parse
+        datelike columns default is True; a column label is datelike if
+
+        * it ends with ``'_at'``,
+
+        * it ends with ``'_time'``,
+
+        * it begins with ``'timestamp'``,
+
+        * it is ``'modified'``, or
+
+        * it is ``'date'``
+
+    keep_default_dates : boolean, default True
+        If parsing dates, then parse the default datelike columns
+    numpy : boolean, default False
+        Direct decoding to numpy arrays. Supports numeric data only, but
+        non-numeric column and index labels are supported. Note also that the
+        JSON ordering MUST be the same for each term if numpy=True.
+    precise_float : boolean, default False
+        Set to enable usage of higher precision (strtod) function when
+        decoding string to double values. Default (False) is to use fast but
+        less precise builtin functionality
+    date_unit : string, default None
+        The timestamp unit to detect if converting dates. The default behaviour
+        is to try and detect the correct precision, but if this is not desired
+        then pass one of 's', 'ms', 'us' or 'ns' to force parsing only seconds,
+        milliseconds, microseconds or nanoseconds respectively.
+
+    Returns
+    -------
+    result : Series or DataFrame
+    """
+    dataset = pd.read_json(*args, **kwargs)
+    return RawDataset(dataset.to_dict('list'))

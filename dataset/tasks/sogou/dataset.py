@@ -1,17 +1,11 @@
-import os
-import cPickle
-from warnings import warn
-from collections import OrderedDict
-from abc import abstractproperty, abstractmethod
-
-import theano
 import numpy as np
+import theano
 
-from pml.dataset.tasks.sogou import SequentialScheme, ShuffledExampleScheme, SequentialExampleScheme, ConstantScheme
-from pml.dataset.tasks.sogou import DataStream, Batch, Mapping, MatrixPadding, SortMapping, Unpack
-from pml.dataset.tasks.sogou import QuerySample, QueryMerge, TokenSample, OutputNoise, MatrixPadding
+from pml.dataset.base import AbstractDocClassificationDataset
+from pml.dataset.tasks.sogou import DataStream, Batch, Mapping, SortMapping, Unpack
+from pml.dataset.tasks.sogou import QuerySample, QueryMerge, OutputNoise, MatrixPadding
+from pml.dataset.tasks.sogou import ShuffledExampleScheme, SequentialExampleScheme, ConstantScheme
 from pml.dataset.tasks.sogou import _balanced_batch_helper
-from pml.dataset.base import AbstractDocClassificationDataset, Map, Process_before_map, Process_after_map
 
 
 class BaseDataset(AbstractDocClassificationDataset):
@@ -31,7 +25,8 @@ class BaseDataset(AbstractDocClassificationDataset):
         if hasattr(self, '_token2index'):
             return self._token2index.copy()
         else:
-            return None
+            self._token2index ={}
+            return self._token2index
 
     def initialize(self, param_load_from=None, *args, **kwargs):
         if param_load_from is None:
@@ -51,61 +46,9 @@ class BaseDataset(AbstractDocClassificationDataset):
                 param_save_to = self.config.dataset_param_save_to
         super(BaseDataset, self).save(param_save_to)
 
-
-class SingleTaskDataset(BaseDataset):
-    def __init__(self, config, task_name, true_label2pred_label=None, *args, **kwargs):
-        super(SingleTaskDataset, self).__init__(*args, **kwargs)
-        self.config = config
-        self.task_name = task_name
-        self.true_label2pred_label = true_label2pred_label
-        self.provide_train_sources = ('id', task_name, 'query')
-        self.provide_test_sources = ('id', 'query',)
-        self.need_mask_sources = {'query': theano.config.floatX}
-        self.compare_source = 'query'
-
-    @property
-    def label_num(self):
-        return len(self.true_label2pred_label)
-
-    def _process_before_mapping_for_train(self, raw_dataset):
-        if self.true_label2pred_label is None:
-            self.true_label2pred_label = self._construct_label_mapping(raw_dataset[self.task_name])
-        return raw_dataset
-
-    @Map
-    def _map(self, raw_dataset, for_type='train'):
-        ids = np.array(raw_dataset['id'])
-
-
-    def _map_for_train(self, raw_dataset):
-        ids = np.array(raw_dataset['id'])
-        idxes, labels = self._map_labels(raw_dataset[self.task_name])
-        queries_per_user = np.array(
-            [[np.array(list(set([self._get_token_index(token) for token in query])),
-                          dtype=self.config.int_type)   # Construct one hot representation
-              for query in queries] for queries in raw_dataset['query']], dtype='O')
-        ids = ids[idxes]
-        queries_per_user = queries_per_user[idxes]
-        return [ids, labels, queries_per_user]
-
-    def _map_for_valid(self, raw_dataset):
-        ids, queries_per_user = self._map_for_test(raw_dataset)
-        idxes, labels = self._map_labels(raw_dataset[self.task_name])
-        ids = ids[idxes]
-        queries_per_user = queries_per_user[idxes]
-        return [ids, labels, queries_per_user]
-
-    def _map_for_test(self, raw_dataset):
-        ids = np.array(raw_dataset['id'])
-        queries_per_user = np.array(
-            [[np.array(list(set([self.token2index[token] for token in query if token in self.token2index])),
-                       dtype=self.config.int_type)
-              for query in queries] for queries in raw_dataset['query']], dtype='O')
-        return (ids, queries_per_user)
-
-    def _map_labels(self, labels):
-        ts = [(idx, self.true_label2pred_label[label]) for idx, label in enumerate(labels)
-              if label in self.true_label2pred_label]
+    def _map_labels(self, labels, label2index):
+        ts = [(idx, label2index[label]) for idx, label in enumerate(labels)
+              if label in label2index]
         idxes, used_labels = zip(*ts)
         idxes = np.array(idxes)
         used_labels = np.array(used_labels)
@@ -115,25 +58,8 @@ class SingleTaskDataset(BaseDataset):
         unique_labels = np.unique(labels)
         return dict(zip(unique_labels, range(len(unique_labels))))
 
-    def _get_token_index(self, token):
-        if self.true_label2pred_label is None:
-            self.true_label2pred_label = {}
-        return self.token2index.setdefault(token, len(self.token2index))
-
-    def _process_after_mapping_for_train(self, dataset):
-        labels = dataset[0]
-        unique_labels, counts = np.unique(labels, return_counts=True)
-        self.label2freq = dict(zip(unique_labels, counts))
-        self._train_sample_num = len(labels)
-        return dataset
-
-    def _process_after_mapping_for_valid(self, dataset):
-        self._valid_sample_num = len(dataset[0])
-        return dataset
-
-    def _process_after_mapping_for_test(self, dataset):
-        self._test_sample_num = len(dataset[0])
-        return dataset
+    def _get_token_index(self, token, label2index):
+        return label2index.setdefault(token, len(self.token2index))
 
     def _construct_shuffled_stream(self, dataset, for_type='train'):
         '''Construc a shuffled stream from an IndexableDataset object
@@ -188,32 +114,32 @@ class SingleTaskDataset(BaseDataset):
                                  for_type=for_type)
         stream = QueryMerge(stream,
                             merge_source='query')
-
-        if for_type == 'train':
-            stream = TokenSample(stream, sample_source='query_mask',
-                                 sample_prob=self.config.token_sample_prob)
-            stream = OutputNoise(stream, output_source=self.task_name,
-                                 label2freq=self.label2freq,
-                                 max_noise_prob=self.config.output_noise_prob,
-                                 decay_rate=self.config.decay_rate)
+        #
+        # if for_type == 'train':
+        #     stream = TokenSample(stream, sample_source='query_mask',
+        #                          sample_prob=self.config.token_sample_prob)
         return stream
 
 
-class MultiTaskDataset(SingleTaskDataset):
-    def __init__(self, config, task_names, true_label2pred_labels=None, *args, **kwargs):
-        '''
+class SingleTaskDataset(BaseDataset):
+    '''Dataset for single-task training
 
-        :param config:
-        :param task_names: list or tuple
-                List of task names, e.g., age, gender and edu
-        :param true_label2pred_labels: dict of dicts
-        :return:
-        '''
-        super(SingleTaskDataset, self).__init__(config, task_name = None, *args, **kwargs)
-        self.config = config
-        self.task_names = task_names
-        self.true_label2pred_labels = true_label2pred_labels
-        self.provide_train_sources = ('id', )+tuple(task_names) +('query',)
+    The information this dataset provides includes:
+        1. user id: str
+        2. labels of given task: int (start from 0). The samples whose true label are 0 are removed.
+        3. user queries: int. Queries are grouped by user
+    Transformation applied:
+        1. Batch
+        2. Padding queries
+        3. Sample queries for training dataset by proportion
+        4. Bag queries
+        5. Add output noise
+    '''
+    def __init__(self, task_name, true_label2pred_label=None, *args, **kwargs):
+        super(SingleTaskDataset, self).__init__(*args, **kwargs)
+        self.task_name = task_name
+        self.true_label2pred_label = true_label2pred_label
+        self.provide_train_sources = ('id', task_name, 'query')
         self.provide_test_sources = ('id', 'query',)
         self.need_mask_sources = {'query': theano.config.floatX}
         self.compare_source = 'query'
@@ -222,143 +148,166 @@ class MultiTaskDataset(SingleTaskDataset):
     def label_num(self):
         return len(self.true_label2pred_label)
 
-    def get_label_num(self, task_name):
-        return self.true_label2pred_labels[task_name]
-
     def _process_before_mapping_for_train(self, raw_dataset):
         if self.true_label2pred_label is None:
-            self.true_label2pred_label = self._construct_label_mapping(raw_dataset[self.task_name])
+            l = len(np.unique(raw_dataset[self.task_name]))
+            self.true_label2pred_label = dict(zip(range(1, l), range(0, l - 1)))
         return raw_dataset
-
 
     def _map_for_train(self, raw_dataset):
         ids = np.array(raw_dataset['id'])
-        idxes, labels = self._map_label(raw_dataset)
-        # You should filter sparse word in the pre-process step
+        idxes, labels = self._map_labels(raw_dataset[self.task_name], self.true_label2pred_label)
         queries_per_user = np.array(
-            [[np.array(list(set([self._get_token_index(token) for token in query])),
-                       dtype=self.config.int_type)  # Construct one hot representation
+            [[np.array(list(set([self._get_token_index(token, self.token2index) for token in query])),
+                          dtype=self.config.int_type)   # Construct one hot representation
               for query in queries] for queries in raw_dataset['query']], dtype='O')
         ids = ids[idxes]
         queries_per_user = queries_per_user[idxes]
-        self._train_sample_num = len(ids)
-        return [ids, labels, queries_per_user]
+        return (ids, labels, queries_per_user)
 
     def _map_for_valid(self, raw_dataset):
-        ids = np.array(raw_dataset['id'])
-        idxes, labels = self._map_label(raw_dataset)
-        # You should filter sparse word in the pre-process step
-        queries_per_user = np.array(
-            [[np.array(list(set([self.token2index(token) for token in query if token in self.token2index])),
-                       dtype=self.config.int_type)
-              for query in queries] for queries in raw_dataset['query']], dtype='O')
+        ids, queries_per_user = self._map_for_test(raw_dataset)
+        idxes, labels = self._map_labels(raw_dataset[self.task_name], self.true_label2pred_label)
         ids = ids[idxes]
         queries_per_user = queries_per_user[idxes]
-        self._valid_sample_num = len(ids)
-        return [ids, labels, queries_per_user]
+        return (ids, labels, queries_per_user)
 
     def _map_for_test(self, raw_dataset):
         ids = np.array(raw_dataset['id'])
-        # You should filter sparse word in the pre-process step
         queries_per_user = np.array(
-            [[np.array(list(set([self.token2index(token) for token in query if token in self.token2index])),
+            [[np.array(list(set([self.token2index[token] for token in query if token in self.token2index])),
                        dtype=self.config.int_type)
               for query in queries] for queries in raw_dataset['query']], dtype='O')
-        self._test_sample_num = len(ids)
-        return [ids, queries_per_user]
+        return (ids, queries_per_user)
 
-    def _map_label(self, raw_dataset):
+    def _process_after_mapping_for_train(self, dataset):
+        super(SingleTaskDataset, self)._process_after_mapping_for_train(dataset)
+        labels = dataset[0]
+        unique_labels, counts = np.unique(labels, return_counts=True)
+        self.label2freq = dict(zip(unique_labels, counts))
+        return dataset
+
+    def _add_transform(self, stream, for_type):
+        # Add mask
+        stream = super(SingleTaskDataset, self)._add_transform(stream, for_type)
+        if for_type == 'train':
+            stream = OutputNoise(stream, output_source=self.task_name,
+                                 label2freq=self.label2freq,
+                                 max_noise_prob=self.config.output_noise_prob,
+                                 decay_rate=self.config.decay_rate)
+        return stream
+
+
+class MultiTaskDataset(BaseDataset):
+    '''Dataset for multiple-task training
+
+    The information this dataset provides includes:
+        1. user id: str
+        2. labels of given tasks: int (start from 0)
+        3. label masks: {0.,1.}. 0. indicate the true label is 0 which actually means unknown.
+        4. user queries: int. Queries are grouped by user
+    Transformation applied:
+        1. Batch
+        2. Padding queries
+        3. Sample queries for training dataset by proportion
+        4. Bag queries
+        5. Add output noise
+
+    '''
+    def __init__(self, config, task_names, true_label2pred_labels=None, *args, **kwargs):
+        '''
+        :param config:
+        :param task_names: list or tuple
+                List of task names, e.g., age, gender and edu
+        :param true_label2pred_labels: dict of dicts
+        :return:
+        '''
+        super(BaseDataset, self).__init__(config, *args, **kwargs)
+        self.config = config
+        self.task_names = task_names
+        self.true_label2pred_labels = true_label2pred_labels
+        self.provide_train_sources = ('id', )+tuple(task_names)+tuple(task_name + '_mask' for task_name in task_names) \
+                                     +('query',)
+        self.provide_test_sources = ('id', 'query',)
+        self.need_mask_sources = {'query': theano.config.floatX}
+        self.compare_source = 'query'
+
+    def get_label_num(self, task_name):
+        return self.true_label2pred_labels[task_name]
+
+    def get_label_freq(self, task_name):
+        return self.label2freqs[task_name]
+
+    def _process_before_mapping_for_train(self, raw_dataset):
         for task_name in self.task_names:
             if self.true_label2pred_labels.get(task_name, None) is None:
-                self.true_label2pred_labels[task_name] = {}
-                labels = np.array([self._get_label(label) for label in raw_dataset[task_name]])
-                idxes = np.arange(len(labels))
+                l = len(np.unique(raw_dataset[task_name]))
+                self.true_label2pred_labels[task_name] = dict(zip(range(1,l), range(0,l-1)))
+        return raw_dataset
+
+    def _process_after_mapping_for_train(self, dataset):
+        self.label2freqs = dict()
+        for task_name in self.task_names:
+            label_idx = self.provide_train_sources.index(task_name)
+            mask_idx = self.provide_train_sources.index(task_name+'_mask')
+            labels = dataset[label_idx][dataset[mask_idx]>0.]
+            unique_labels, counts = np.unique(labels, return_counts=True)
+            self.label2freqs[task_name] = dict(zip(unique_labels, counts))
+        return dataset
+
+    def _map_for_train(self, raw_dataset):
+        ids = np.array(raw_dataset['id'])
+        queries_per_user = np.array(
+            [[np.array(list(set([self._get_token_index(token, self.token2index) for token in query])),
+                       dtype=self.config.int_type)  # Construct one hot representation
+              for query in queries] for queries in raw_dataset['query']], dtype='O')
+        task_labels = []
+        label_masks = []
+        for task_name in self.task_names:
+            labels, mask = self._map_labels(raw_dataset[task_name], self.true_label2pred_labels[task_name])
+            task_labels.append(labels)
+            label_masks.append(mask)
+        return (ids, ) + tuple(task_labels) + tuple(label_masks) + (queries_per_user,)
+
+    def _map_labels(self, labels, label2index):
+        mask = []
+        mapped_labels = []
+        for label in labels:
+            mapped_label = label2index.get(label, -1)
+            if mapped_label == -1:
+                mapped_labels.append(0)
+                mask.append(0.)
             else:
-                idxes, labels = zip(*[(i, self.true_label2pred_label[label])
-                                      for i, label in enumerate(raw_dataset[self.task_name])
-                                      if label in self.true_label2pred_label])
-                idxes = np.array(idxes)
-                labels = np.array(labels)
+                mapped_labels.append(mapped_label)
+                mask.append(1.)
+        mask = np.array(mask, dtype=theano.config.floatX)
+        mapped_labels = np.array(mapped_labels, dtype=self.config.int_type)
+        return mapped_labels, mask
 
-        return idxes, labels
+    def _map_for_valid(self, raw_dataset):
+        ids, queries_per_user = self._map_for_test(raw_dataset)
+        task_labels = []
+        label_masks = []
+        for task_name in self.task_names:
+            labels, mask = self._map_labels(raw_dataset[task_name], self.true_label2pred_labels[task_name])
+            task_labels.append(labels)
+            label_masks.append(mask)
+        return (ids,) + tuple(task_labels) + tuple(label_masks) + (queries_per_user,)
 
-    def _get_label(self, label, task_name, *args):
-        if self.true_label2pred_label is None:
-            pass
-        return self.true_label2pred_label.setdefault(label, len(self.true_label2pred_label))
+    def _map_for_test(self, raw_dataset):
+        ids = np.array(raw_dataset['id'])
+        queries_per_user = np.array(
+            [[np.array(list(set([self.token2index[token] for token in query if token in self.token2index])),
+                       dtype=self.config.int_type)
+              for query in queries] for queries in raw_dataset['query']], dtype='O')
+        return (ids, queries_per_user)
 
-    def _get_token_index(self, token):
-        if self.true_label2pred_label is None:
-            self.true_label2pred_label = {}
-        return self.token2index.setdefault(token, len(self.token2index))
-
-    def _construct_shuffled_stream(self, dataset, for_type='train'):
-        '''Construc a shuffled stream from an IndexableDataset object
-
-        Subclass should add transformation on the stream, e.g.,
-                1.Sort samples by size
-                2.Batch dataset
-                3.Add mask on samples
-        :param dataset: fuel.IndexableDataset
-                This is constructed by self._construct_dataset method.
-        :return: fuel.stream.Datastream
-                An object of fuel.stream.Datastream with ShuffledExampleScheme
-                A fuel shuffled stream with basic transformations,
-        '''
-        it = ShuffledExampleScheme(dataset.num_examples)
-        stream = DataStream(dataset, iteration_scheme=it)
-        # Sort sets of multiple batches to make batches of similar sizes
-        stream = Batch(stream,
-                       iteration_scheme=ConstantScheme(self.config.batch_size * self.config.sort_batch_count))
-        comparison = _balanced_batch_helper(stream.sources.index(self.compare_source))
-        stream = Mapping(stream, SortMapping(comparison))
-        stream = Unpack(stream)
-        stream = Batch(stream, iteration_scheme=ConstantScheme(self.config.batch_size))
-        # Add mask
-        for source in self.need_mask_sources.iteritems():
-            stream = MatrixPadding(stream, mask_sources=[source[0]], mask_dtype=source[1])
-        stream = BaggedQuerySample(stream,
-                                   sample_source='query',
-                                   sample_prob=self.config.query_sample_prob,
-                                   for_type=for_type)
+    def _add_transform(self, stream, for_type):
+        stream = super(MultiTaskDataset, self)._add_transform(stream, for_type)
         if for_type == 'train':
-            stream = FeatureSample(stream, 'query_mask',
-                                   self.config.token_sample_prob)
-            stream = OutputNoise(stream, output_source='age',
-                                 label2freq=self.age2freq,
-                                 max_noise_prob=self.config.age_max_noise,
-                                 decay_rate=self.config.age_decay_rate)
-            stream = OutputNoise(stream, output_source='gender',
-                                 label2freq=self.gender2freq,
-                                 max_noise_prob=self.config.gender_max_noise,
-                                 decay_rate=self.config.gender_decay_rate)
-            stream = OutputNoise(stream, output_source='edu',
-                                 label2freq=self.edu2freq,
-                                 max_noise_prob=self.config.edu_max_noise,
-                                 decay_rate=self.config.edu_decay_rate)
+            for task_name in self.task_names:
+                stream = OutputNoise(stream, output_source=task_name,
+                                     label2freq=self.label2freqs[task_name],
+                                     max_noise_prob=self.config.output_noise_probs[task_name],
+                                     decay_rate=self.config.decay_rates[task_name])
         return stream
-
-    def _construct_sequential_stream(self, dataset, for_type='train'):
-        '''Construc a sequencial stream from an IndexableDataset object
-
-        Subclass should add transformation on the stream, e.g.,
-                1.Sort samples by size
-                2.Batch dataset
-                3.Add mask on samples
-        :param dataset: fuel.IndexableDataset
-                This is constructed by self._construct_dataset method.
-        :return: fuel.stream.Datastream
-                An object of fuel.stream.Datastream with SequentialExampleScheme
-                A fuel sequential stream with basic transformations,
-        '''
-        it = SequentialExampleScheme(dataset.num_examples)
-        stream = DataStream(dataset, iteration_scheme=it)
-        # # Batch examples
-        # stream = Batch(stream, iteration_scheme=ConstantScheme(self.batch_size))
-        # Add mask on inputs
-        # for source in self.need_mask_sources.iteritems():
-        #     stream = Padding(stream, mask_sources=[source[0]], mask_dtype=source[1])
-        return stream
-
-
-

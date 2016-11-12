@@ -1,20 +1,31 @@
 # -*- coding: utf-8 -*-
-import re
 import cPickle
-from abc import abstractmethod, abstractproperty
-from warnings import warn
 
-import numpy as np
 import jieba
+import numpy as np
 
 
 class AbstractPreprocessor(object):
-    '''Do preprocessing on raw dataset
+    '''Process RawDataset by pipeline
 
-    Sub-class should implement the process() method which does preprocessing on the raw dataset.
+    Given an instance of pml.dataset.base.RawDataset, the processor does some work on given fields
+    of the raw dataset and generates new fields corresponding the processed results.
 
+    By default, with allow_replace set to be False, the generated fields should have unique names,
+    otherwise an ValueError indicating name conflict will be raised. With allow_replace set to be
+    True, using existing name means replacing values of the field with that name. The later mode is
+    usually used for memory saving.
+
+    Define specific processing:
+        Implement process() method to do user specific processing. You are recommended to access data
+        fields by names. And you should note that the processing is pipelined, current processor is
+        applied on the result of former processors.
+
+    Do processing on dataset:
+        Invoke apply() method on instance of pml.dataset.base.RawDataset, this will return the processed
+        raw dataset with fields added or update.
     '''
-    def __init__(self, preprocessor = None, *args, **kwargs):
+    def __init__(self, preprocessor=None):
         '''Pre-processor for raw dataset
 
         The pre-processing maybe some common operation on raw dataset like tokenization for
@@ -22,59 +33,116 @@ class AbstractPreprocessor(object):
         and so on.
         :param preprocessor: instance of AbstractPreprocessor
                 The wrapped preprocessor which should be applied before current preprocessor.
+        :param allow_replace: bool
+
         '''
         self.preprocessor = preprocessor
 
-    def chattr(self, preprocess_cls, key, value):
-        '''Change attribute of current and former pre-processor
-
-        All the stacked pre-processors' attribute with the given name will be changed to the
-        given value.
-        :param preprocess_cls: preprocess class
-                Define which preprocess the attribute changing should be applied.
-        :param key: str
-                Attribute name
-        :param value: obj
-                Attribute value
-        '''
-        if isinstance(self, preprocess_cls) and hasattr(self, key):
-            self.key = value
-        elif self.preprocessor is not None:
-            self.preprocessor.chattr(preprocess_cls, key, value)
+    def __add__(self, other):
+        if not isinstance(other, AbstractPreprocessor):
+            raise TypeError('"+" operation is not applied for type {0}'.format(type(other)))
         else:
-            raise ValueError('No preprocessor has define {0} attribute'.format(key))
+            other.preprocessor = self
+            return other
+
+    @property
+    def allow_replace(self):
+        '''Indicator if processor can update fields of dataset. If False (default), you can only
+           insert new fields into the dataset, otherwise, you can change the values of existing fields.
+        '''
+        if hasattr(self, '_allow_replace'):
+            return self._allow_replace
+        else:
+            return False
+
+    @allow_replace.setter
+    def allow_replace(self, value):
+        '''Indicator if processor can update fields of dataset. If False (default), you can only
+           insert new fields into the dataset, otherwise, you can change the values of existing fields.
+         '''
+        if not isinstance(value, bool):
+            raise TypeError('allow_replace should be a bool value')
+        else:
+            self._allow_replace = value
+            if self.preprocessor is not None:
+                self.preprocessor.allow_replace = value
+
+    @property
+    def appended_sources(self):
+        if self.preprocessor is not None:
+            return self.preprocessor.appended_sources
+        else:
+            return set()
+
+    def _check_name_conflict(self, sources):
+        intersection = self.appended_sources.intersection(sources)
+        if len(intersection) != 0:
+            error_str = 'Name conflict for:{0}'.format(','.join(map(str, intersection)))
+            raise ValueError(error_str)
 
     def apply(self, raw_dataset, *args, **kwargs):
         '''Do preprocessing on the given dataset
 
         The processing is applied on the outputs of former preprocessor defined in the constructor
-        :param raw_dataset: dict
-                Map field name to field value (numpy.ndarray).
-        :return: dict
-                Pre-processed raw dataset
+        :param raw_dataset: instance of pml.dataset.base.RawDataset
+
+        :return: instance of pml.dataset.base.RawDataset
+                The preprocessed result is added to the passed RawDataset object
         '''
+        # Check name conflict
+        if not self.allow_replace:
+            self._check_name_conflict(raw_dataset.sources)
         if self.preprocessor is not None:
             raw_dataset = self.preprocessor.apply(raw_dataset, *args, **kwargs)
         return self.process(raw_dataset, *args, **kwargs)
 
-    def process(self, raw_dataset, *args, **kwargs):
+    def process(self, raw_dataset):
         '''Do dataset pre-process
 
-         :param raw_dataset: list or tuple of numpy.ndarray
-                This stores the attributes of training samples. Every item corresponds an attribute and
-                the length of each attribute should be the same.
-        :return: list or tuple
+        :return: instance of pml.dataset.base.RawDataset
                 Pre-processed raw dataset
         '''
         return raw_dataset
 
 
-class ChineseTokenizer(AbstractPreprocessor):
-    def __init__(self, source_name, *args, **kwargs):
-        super(ChineseTokenizer, self).__init__(*args, **kwargs)
+class SinglePreprocessor(AbstractPreprocessor):
+    def __init__(self, source_name, result_source_name, **kwargs):
+        super(SinglePreprocessor, self).__init__(**kwargs)
         self.source_name = source_name
+        self.result_source_name = result_source_name
 
-    def process(self, raw_dataset, *args, **kwargs):
+    @property
+    def appended_sources(self):
+        if self.preprocessor is not None:
+            return self.preprocessor.appended_sources.union({self.result_source_name})
+        else:
+            return {self.result_source_name}
+
+    def _is_name_conflict(self):
+        if self.preprocessor is not None and self.result_source_name in self.preprocessor.appended_sources:
+            return True
+        else:
+            return False
+
+
+class ChineseTokenizer(SinglePreprocessor):
+    def __init__(self, **kwargs):
+        '''Tokenize chinese text into words
+
+        The tokenized text will be added into the raw dataset.
+        :param source_name: str
+                The name of the field on which the tokenization applied
+        :param result_source_name: str
+                The name of tokenized text field. If it not given or set to be None (default),
+                source_name+'_tokenized' will be applied.
+        '''
+        kwargs.setdefault('result_source_name', kwargs['source_name']+'_tokenized')
+        super(ChineseTokenizer, self).__init__(**kwargs)
+        if self._is_name_conflict():
+            raise ValueError('Name conflict! The name {0} for tokenized text has been used!'
+                             .format(self.result_source_name))
+
+    def process(self, raw_dataset):
         '''Tokenize chinese text into tokens with jieba in accurate mode with HMM
 
         Refer 'https://github.com/fxsjy/jieba' for more detail information about jieba
@@ -87,21 +155,23 @@ class ChineseTokenizer(AbstractPreprocessor):
         tokenized_texts = []
         for text in texts:
             tokenized_texts.append(jieba.lcut(text, cut_all=False, HMM=True))
-        new_raw_dataset = raw_dataset
-        raw_dataset[self.source_name] = np.array(tokenized_texts)
-        return new_raw_dataset
+        raw_dataset[self.result_source_name] = np.array(tokenized_texts)
+        return raw_dataset
 
 
-class ChineseCharacterizer(AbstractPreprocessor):
+class ChineseCharacterizer(SinglePreprocessor):
     '''Split chinese text into list of characters
 
     Continuous digits, english characters are combined and treated as one character.
     '''
-    def __init__(self, source_name, *args, **kwargs):
-        super(ChineseCharacterizer, self).__init__(*args, **kwargs)
-        self.source_name = source_name
+    def __init__(self, **kwargs):
+        kwargs.setdefault('result_source_name', kwargs['source_name']+'_characterized')
+        super(ChineseCharacterizer, self).__init__(**kwargs)
+        if self._is_name_conflict():
+            raise ValueError('Name conflict! The name {0} for characterized text has been used!'
+                             .format(self.result_source_name))
 
-    def process(self, raw_dataset, *args, **kwargs):
+    def process(self, raw_dataset):
         '''Split chinese text into list of characters
 
 
@@ -126,9 +196,8 @@ class ChineseCharacterizer(AbstractPreprocessor):
             if len(s)>0:
                 chars.append(''.join(s))
             text_characters.append(chars)
-        new_raw_dataset = raw_dataset   # Here we do not use copy for memory saving
-        new_raw_dataset[self.source_name] = np.array(text_characters)
-        return new_raw_dataset
+        raw_dataset[self.result_source_name] = np.array(text_characters)
+        return raw_dataset
 
     def _is_ascii(self, char):
         if ord(char) < 128:
@@ -137,7 +206,7 @@ class ChineseCharacterizer(AbstractPreprocessor):
             return False
 
 
-class SparseTokenFilter(AbstractPreprocessor):
+class SparseTokenFilter(SinglePreprocessor):
     '''Filter out sparse token, e.g., word, character
 
     Filter out tokens which occur less than given times. If the 'backup_token' attribute given in the constructor,
@@ -148,12 +217,13 @@ class SparseTokenFilter(AbstractPreprocessor):
     For testing: load token2freq information (is training dataset has not been dealt within current runing),
                  do filtering
     '''
-    def __init__(self, source_name,
+    def __init__(self,
                  sparse_threshold,
-                 load_from = None,
-                 save_to = None,
-                 backup_token = None,
-                 *args, **kwargs):
+                 load_from=None,
+                 save_to=None,
+                 backup_token=None,
+                 remove_empty=False,
+                 **kwargs):
         '''
         :param source_name: str
                 The name of the token field to be filtered, i.e., raw_dataset[source_name]
@@ -170,13 +240,19 @@ class SparseTokenFilter(AbstractPreprocessor):
                 and testing dataset on the run.
         :param backup_token: str
                 Token to replace the sparse token, e.g., '<unk>'
+        :param remove_empty: bool
+                Indicate if removing empty text after the filtering.
         '''
-        super(SparseTokenFilter, self).__init__(*args, **kwargs)
-        self.source_name = source_name
+        kwargs.setdefault('result_source_name', kwargs['source_name']+'_freq_filtered')
+        super(SparseTokenFilter, self).__init__(**kwargs)
+        if self._is_name_conflict():
+            raise ValueError('Name conflict! The name {0} for token text filtered by frequency has been used!'
+                             .format(self.result_source_name))
         self.sparse_threshold = sparse_threshold
         self.backup_token = backup_token
         self.load_from = load_from
         self.save_to = save_to
+        self.remove_empty = remove_empty
         self._token2freq = None
 
     @property
@@ -191,7 +267,7 @@ class SparseTokenFilter(AbstractPreprocessor):
         else:
             return None
 
-    def process(self, raw_dataset, *args, **kwargs):
+    def process(self, raw_dataset):
         texts = raw_dataset[self.source_name]
         # Generate token2freq information
         if self._token2freq is None:
@@ -205,8 +281,7 @@ class SparseTokenFilter(AbstractPreprocessor):
                     self._save_token2freq()
         # Filter out sparse token
         filtered_texts = []
-        idxes = []
-        for idx, text in enumerate(texts):
+        for text in texts:
             new_text = []
             for token in text:
                 if self._is_sparse_token(token):
@@ -214,18 +289,23 @@ class SparseTokenFilter(AbstractPreprocessor):
                         new_text.append(self.backup_token)
                 else:
                     new_text.append(token)
-            if len(new_text) == 0:  # All the tokens of a text are sparse
-                continue
-            else:
-                filtered_texts.append(new_text)
+            filtered_texts.append(new_text)
+        raw_dataset[self.result_source_name] = np.array(filtered_texts)
+        if self.remove_empty:
+            raw_dataset = self._trim_empty(self.result_source_name, raw_dataset)
+        return raw_dataset
+
+    @classmethod
+    def _trim_empty(cls, result_source_name, raw_dataset):
+        idxes = []
+        for idx, text in enumerate(raw_dataset[result_source_name]):
+            if len(text) != 0:
                 idxes.append(idx)
         idxes = np.array(idxes)
-        for source in raw_dataset.keys():
-            if source != self.source_name:
+        if len(idxes) != len(raw_dataset):
+            for source in raw_dataset.sources:
                 raw_dataset[source] = raw_dataset[source][idxes]
-        new_raw_dataset = raw_dataset
-        new_raw_dataset[self.source_name] = np.array(filtered_texts)
-        return new_raw_dataset
+        return raw_dataset
 
     def _load_token2freq(self):
         with open(self.load_from, 'rb') as reader:
@@ -245,7 +325,7 @@ class SparseTokenFilter(AbstractPreprocessor):
             return False
 
 
-class KeywordFilter(AbstractPreprocessor):
+class KeywordFilter(SinglePreprocessor):
     '''Filter out none keywords
 
     Filter out tokens which are not keywords defined in external source. If the 'backup_token' attribute given
@@ -253,11 +333,11 @@ class KeywordFilter(AbstractPreprocessor):
     they will be deleted directly.
 
     '''
-
-    def __init__(self, source_name,
+    def __init__(self,
                  load_from=None,
                  backup_token=None,
-                 *args, **kwargs):
+                 remove_empty=False,
+                 **kwargs):
         '''
         :param source_name: int
                 The name of the token field to be filtered, i.e., raw_dataset[source_name]
@@ -267,10 +347,14 @@ class KeywordFilter(AbstractPreprocessor):
         :param backup_token: str
                 Token to replace the sparse token, e.g., '<unk>'
         '''
-        super(KeywordFilter, self).__init__(*args, **kwargs)
-        self.source_name = source_name
+        kwargs.setdefault('result_source_name', kwargs['source_name']+'_keyword_filtered')
+        super(KeywordFilter, self).__init__(**kwargs)
+        if self._is_name_conflict():
+            raise ValueError('Name conflict! The name {0} for text filtered by keywords has been used!'
+                             .format(self.result_source_name))
         self.backup_token = backup_token
         self.load_from = load_from
+        self.remove_empty = remove_empty
         self._keywords = None
 
     @property
@@ -291,12 +375,11 @@ class KeywordFilter(AbstractPreprocessor):
         else:
             raise ValueError('Keywords should be stored in a list, tuple or set!')
 
-    def process(self, raw_dataset, *args, **kwargs):
+    def process(self, raw_dataset):
         texts = raw_dataset[self.source_name]
         # Filter out none keyword tokens
-        idxes = []
         filtered_texts = []
-        for idx, text in enumerate(texts):
+        for text in texts:
             new_text = []
             for token in text:
                 if token not in self.keywords:
@@ -304,32 +387,45 @@ class KeywordFilter(AbstractPreprocessor):
                         new_text.append(self.backup_token)
                 else:
                     new_text.append(token)
-            if len(new_text) == 0:
-                continue
-            else:
+            filtered_texts.append(new_text)
+        raw_dataset[self.result_source_name] = np.array(filtered_texts)
+        if self.remove_empty:
+            raw_dataset = SparseTokenFilter._trim_empty(self.result_source_name, raw_dataset)
+        return raw_dataset
+
+    def _trim_empty(self, raw_dataset):
+        idxes = []
+        for idx, text in enumerate(raw_dataset[self.result_source_name]):
+            if len(text) != 0:
                 idxes.append(idx)
-                filtered_texts.append(new_text)
         idxes = np.array(idxes)
-        for sources in raw_dataset.keys():
-            if sources != self.source_name:
-                raw_dataset[sources] = raw_dataset[sources][idxes]
-        new_raw_dataset = raw_dataset
-        new_raw_dataset[self.source_name] = np.array(filtered_texts)
-        return new_raw_dataset
+        if len(idxes) != len(raw_dataset):
+            for source in raw_dataset.sources:
+                raw_dataset[source] = raw_dataset[source][idxes]
+        return raw_dataset
 
     def _load_keywords(self):
         with open(self.load_from, 'rb') as reader:
             self._keywords = cPickle.load(reader)
 
 
+def test_preprocess():
+    from pml.dataset.base import RawDataset
+    raw_dataset = RawDataset({'doc': np.array(['我在中国good', 'American是个非常好的place我很666',
+                                               '中国是个很有意思的地方', '我来自中国', '我在读书', 'hahaha']),
+                              'idx': np.array([1, 2, 3, 4, 5, 6])})
+    tokenizer = ChineseTokenizer(source_name='doc', result_source_name='doc_tokenized')
+    freq_filter = SparseTokenFilter(source_name='doc_tokenized', result_source_name='doc_sparse_filtered',
+                                    sparse_threshold=1, backup_token=None, remove_empty=True)
+    keyword_filter = KeywordFilter(source_name='doc_sparse_filtered', result_source_name='doc_keyword_filtered',
+                                   remove_empty=True)
+    keyword_filter.keywords = {u'中国', u'good', u'American'}
+    preprocessor = tokenizer + freq_filter + keyword_filter
+    preprocessor.allow_replace = True
+    raw_dataset = preprocessor.apply(raw_dataset)
+    print(raw_dataset.values())
+
+
 if __name__ == '__main__':
-    characterizer = ChineseCharacterizer(0)
-    raw_dataset = {'doc':np.array(['我在中国good', 'American是个非常好的place我很666',
-                            '中国是个很有意思的地方','我来自中国','我在读书','hahaha']), 'idx':np.array([1,2,3,4,5,6])}
-    # raw_dataset = characterizer.apply(raw_dataset)
-    tokenizer = ChineseTokenizer('doc')
-    # filter = SparseTokenFilter('doc', 1, backup_token=None, preprocessor=tokenizer)
-    filter = KeywordFilter('doc', preprocessor=tokenizer)
-    filter.keywords = {u'中国',u'good',u'American'}
-    raw_dataset = filter.apply(raw_dataset)
-    print(raw_dataset)
+
+    test_preprocess()
