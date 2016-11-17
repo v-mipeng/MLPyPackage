@@ -6,9 +6,9 @@ import numpy as np
 
 
 class AbstractPreprocessor(object):
-    '''Process RawDataset by pipeline
+    '''Process DatasetContainer by pipeline
 
-    Given an instance of pml.dataset.base.RawDataset, the processor does some work on given fields
+    Given an instance of pml.dataset.base.DatasetContainer, the processor does some work on given fields
     of the raw dataset and generates new fields corresponding the processed results.
 
     By default, with allow_replace set to be False, the generated fields should have unique names,
@@ -22,10 +22,10 @@ class AbstractPreprocessor(object):
         applied on the result of former processors.
 
     Do processing on dataset:
-        Invoke apply() method on instance of pml.dataset.base.RawDataset, this will return the processed
+        Invoke apply() method on instance of pml.dataset.base.DatasetContainer, this will return the processed
         raw dataset with fields added or update.
     '''
-    def __init__(self, preprocessor=None):
+    def __init__(self, config=None, preprocessor=None):
         '''Pre-processor for raw dataset
 
         The pre-processing maybe some common operation on raw dataset like tokenization for
@@ -37,6 +37,18 @@ class AbstractPreprocessor(object):
 
         '''
         self.preprocessor = preprocessor
+        self.config = config
+
+    @property
+    def config(self):
+        if self._config is not None:
+            return self._config.copy()
+        else:
+            return None
+
+    @config.setter
+    def config(self, value):
+        self._config = value
 
     def __add__(self, other):
         if not isinstance(other, AbstractPreprocessor):
@@ -84,10 +96,10 @@ class AbstractPreprocessor(object):
         '''Do preprocessing on the given dataset
 
         The processing is applied on the outputs of former preprocessor defined in the constructor
-        :param raw_dataset: instance of pml.dataset.base.RawDataset
+        :param raw_dataset: instance of pml.dataset.base.DatasetContainer
 
-        :return: instance of pml.dataset.base.RawDataset
-                The preprocessed result is added to the passed RawDataset object
+        :return: instance of pml.dataset.base.DatasetContainer
+                The preprocessed result is added to the passed DatasetContainer object
         '''
         # Check name conflict
         if not self.allow_replace:
@@ -99,7 +111,7 @@ class AbstractPreprocessor(object):
     def process(self, raw_dataset):
         '''Do dataset pre-process
 
-        :return: instance of pml.dataset.base.RawDataset
+        :return: instance of pml.dataset.base.DatasetContainer
                 Pre-processed raw dataset
         '''
         return raw_dataset
@@ -410,8 +422,8 @@ class KeywordFilter(SinglePreprocessor):
 
 
 def test_preprocess():
-    from pml.dataset.base import RawDataset
-    raw_dataset = RawDataset({'doc': np.array(['我在中国good', 'American是个非常好的place我很666',
+    from pml.dataset.base import DatasetContainer
+    raw_dataset = DatasetContainer({'doc': np.array(['我在中国good', 'American是个非常好的place我很666',
                                                '中国是个很有意思的地方', '我来自中国', '我在读书', 'hahaha']),
                               'idx': np.array([1, 2, 3, 4, 5, 6])})
     tokenizer = ChineseTokenizer(source_name='doc', result_source_name='doc_tokenized')

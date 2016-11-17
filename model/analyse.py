@@ -1,5 +1,13 @@
+'''Define classes for analysing model parameters
+
+This is designed to analyse model parameters like word embeddings, weight norm,
+
+'''
+
 import numpy as np
 import numpy.linalg as la
+
+
 
 class EmbeddingVisual(object):
     '''
@@ -48,7 +56,7 @@ class EmbeddingVisual(object):
         orignal_vec = self.embeddings[self.key2index[key]]
         return self.get_similar_by_vec(orignal_vec)
 
-    def get_similar_by_vec(self, vec, topn = 10, *args, **kwargs):
+    def get_similar_by_vec(self, vec, topn=10, *args, **kwargs):
         vec = np.array(vec)
         sims = ((self.embeddings - vec)**2).sum(axis=1)
         orders = np.argsort(sims)
@@ -69,5 +77,4 @@ class EmbeddingVisual(object):
         vec_two = self.embeddings[self.key2index[key_two]]
         distance = np.sqrt(((vec_one-vec_two)**2).sum())
         return distance
-
 

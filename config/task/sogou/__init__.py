@@ -1,5 +1,5 @@
 from pml.config.base import BasicConfig
-from pml.dataset.tasks.sogou.dataset import SingleTaskDataset, MultiTaskDataset
+from pml.dataset.tasks.sogou.dataset import SingleTaskSogouDataset, MultiTaskSogouDataset
 
 class BaseConfig(BasicConfig):
     def __init__(self):
@@ -14,7 +14,7 @@ class SingleTaskConfig(BaseConfig):
 
         self.task_name = 'age'
 
-        self.Dataset = SingleTaskDataset
+        self.Dataset = SingleTaskSogouDataset
 
 
 class MultiTaskConfig(BaseConfig):

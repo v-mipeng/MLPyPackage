@@ -1,18 +1,18 @@
 import numpy as np
 import theano
 
-from pml.dataset.base import AbstractDocClassificationDataset
+from pml.dataset.base import AbstractDocClassificationDataset, DatasetContainer
 from pml.dataset.tasks.sogou import DataStream, Batch, Mapping, SortMapping, Unpack
 from pml.dataset.tasks.sogou import QuerySample, QueryMerge, OutputNoise, MatrixPadding
 from pml.dataset.tasks.sogou import ShuffledExampleScheme, SequentialExampleScheme, ConstantScheme
 from pml.dataset.tasks.sogou import _balanced_batch_helper
 
 
-class BaseDataset(AbstractDocClassificationDataset):
-    def __init__(self, config, *args, **kwargs):
-        super(BaseDataset, self).__init__(*args, **kwargs)
+
+class BaseSogouDataset(AbstractDocClassificationDataset):
+    def __init__(self, config, **kwargs):
+        super(BaseSogouDataset, self).__init__(**kwargs)
         self.config = config
-        self.provide_test_sources = ('id', 'query',)
         self.need_mask_sources = {'query': theano.config.floatX}
         self.compare_source = 'query'
 
@@ -28,23 +28,23 @@ class BaseDataset(AbstractDocClassificationDataset):
             self._token2index ={}
             return self._token2index
 
-    def initialize(self, param_load_from=None, *args, **kwargs):
+    def initialize(self, param_load_from=None):
         if param_load_from is None:
             if hasattr(self.config, 'dataset_param_load_from'):
                 param_load_from = self.config.dataset_param_load_from
-        super(BaseDataset, self).initialize(param_load_from)
+        super(BaseSogouDataset, self).initialize(param_load_from)
 
-    def reset(self, preserved_attributes=None, *args, **kwargs):
+    def reset(self, preserved_attributes=None):
         preserved_attrs = {'config', 'task_name', '_true_label2pred_label', '_pred_label2true_label',
                            'provide_train_sources', 'provide_test_sources', 'need_mask_sources',
                            'compare_source'}
-        super(BaseDataset, self).reset(preserved_attrs)
+        super(BaseSogouDataset, self).reset(preserved_attrs, *args, **kwargs)
 
     def save(self, param_save_to=None):
         if param_save_to is None:
             if hasattr(self.config, 'dataset_param_save_to'):
                 param_save_to = self.config.dataset_param_save_to
-        super(BaseDataset, self).save(param_save_to)
+        super(BaseSogouDataset, self).save(param_save_to)
 
     def _map_labels(self, labels, label2index):
         ts = [(idx, label2index[label]) for idx, label in enumerate(labels)
@@ -121,7 +121,7 @@ class BaseDataset(AbstractDocClassificationDataset):
         return stream
 
 
-class SingleTaskDataset(BaseDataset):
+class SingleTaskSogouDataset(BaseSogouDataset):
     '''Dataset for single-task training
 
     The information this dataset provides includes:
@@ -136,7 +136,7 @@ class SingleTaskDataset(BaseDataset):
         5. Add output noise
     '''
     def __init__(self, task_name, true_label2pred_label=None, *args, **kwargs):
-        super(SingleTaskDataset, self).__init__(*args, **kwargs)
+        super(SingleTaskSogouDataset, self).__init__(*args, **kwargs)
         self.task_name = task_name
         self.true_label2pred_label = true_label2pred_label
         self.provide_train_sources = ('id', task_name, 'query')
@@ -163,14 +163,15 @@ class SingleTaskDataset(BaseDataset):
               for query in queries] for queries in raw_dataset['query']], dtype='O')
         ids = ids[idxes]
         queries_per_user = queries_per_user[idxes]
-        return (ids, labels, queries_per_user)
+        return DatasetContainer(dict(zip(('id',self.task_name, 'query'), (ids, labels, queries_per_user))))
 
     def _map_for_valid(self, raw_dataset):
-        ids, queries_per_user = self._map_for_test(raw_dataset)
+        dataset = self._map_for_test(raw_dataset)
         idxes, labels = self._map_labels(raw_dataset[self.task_name], self.true_label2pred_label)
-        ids = ids[idxes]
-        queries_per_user = queries_per_user[idxes]
-        return (ids, labels, queries_per_user)
+        dataset['id'] = dataset['id'][idxes]
+        dataset['query'] = dataset['query'][idxes]
+        dataset[self.task_name] = labels
+        return dataset
 
     def _map_for_test(self, raw_dataset):
         ids = np.array(raw_dataset['id'])
@@ -178,10 +179,10 @@ class SingleTaskDataset(BaseDataset):
             [[np.array(list(set([self.token2index[token] for token in query if token in self.token2index])),
                        dtype=self.config.int_type)
               for query in queries] for queries in raw_dataset['query']], dtype='O')
-        return (ids, queries_per_user)
+        return DatasetContainer(dict(zip(('id', 'query'), (ids, queries_per_user))))
 
     def _process_after_mapping_for_train(self, dataset):
-        super(SingleTaskDataset, self)._process_after_mapping_for_train(dataset)
+        super(SingleTaskSogouDataset, self)._process_after_mapping_for_train(dataset)
         labels = dataset[0]
         unique_labels, counts = np.unique(labels, return_counts=True)
         self.label2freq = dict(zip(unique_labels, counts))
@@ -189,7 +190,7 @@ class SingleTaskDataset(BaseDataset):
 
     def _add_transform(self, stream, for_type):
         # Add mask
-        stream = super(SingleTaskDataset, self)._add_transform(stream, for_type)
+        stream = super(SingleTaskSogouDataset, self)._add_transform(stream, for_type)
         if for_type == 'train':
             stream = OutputNoise(stream, output_source=self.task_name,
                                  label2freq=self.label2freq,
@@ -198,7 +199,7 @@ class SingleTaskDataset(BaseDataset):
         return stream
 
 
-class MultiTaskDataset(BaseDataset):
+class MultiTaskSogouDataset(BaseSogouDataset):
     '''Dataset for multiple-task training
 
     The information this dataset provides includes:
@@ -214,7 +215,7 @@ class MultiTaskDataset(BaseDataset):
         5. Add output noise
 
     '''
-    def __init__(self, config, task_names, true_label2pred_labels=None, *args, **kwargs):
+    def __init__(self, task_names, true_label2pred_labels=None, *args, **kwargs):
         '''
         :param config:
         :param task_names: list or tuple
@@ -222,13 +223,9 @@ class MultiTaskDataset(BaseDataset):
         :param true_label2pred_labels: dict of dicts
         :return:
         '''
-        super(BaseDataset, self).__init__(config, *args, **kwargs)
-        self.config = config
+        super(BaseSogouDataset, self).__init__(**kwargs)
         self.task_names = task_names
         self.true_label2pred_labels = true_label2pred_labels
-        self.provide_train_sources = ('id', )+tuple(task_names)+tuple(task_name + '_mask' for task_name in task_names) \
-                                     +('query',)
-        self.provide_test_sources = ('id', 'query',)
         self.need_mask_sources = {'query': theano.config.floatX}
         self.compare_source = 'query'
 
@@ -237,6 +234,12 @@ class MultiTaskDataset(BaseDataset):
 
     def get_label_freq(self, task_name):
         return self.label2freqs[task_name]
+
+    def get_true_label2pred_label(self, task_name):
+        return self.true_label2pred_labels[task_name]
+
+    def get_pred_label2true_label(self, task_name):
+        return {v:k for k, v in self.get_true_label2pred_label(task_name).iteritems()}
 
     def _process_before_mapping_for_train(self, raw_dataset):
         for task_name in self.task_names:
@@ -303,7 +306,7 @@ class MultiTaskDataset(BaseDataset):
         return (ids, queries_per_user)
 
     def _add_transform(self, stream, for_type):
-        stream = super(MultiTaskDataset, self)._add_transform(stream, for_type)
+        stream = super(MultiTaskSogouDataset, self)._add_transform(stream, for_type)
         if for_type == 'train':
             for task_name in self.task_names:
                 stream = OutputNoise(stream, output_source=task_name,

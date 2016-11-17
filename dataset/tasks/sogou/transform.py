@@ -94,6 +94,44 @@ class QuerySample(Transformer):
         return tuple(batch_with_samplings)
 
 
+class ConQuerySample(Transformer):
+    def __init__(self, data_stream, sample_num, sample_source_mask='query_mask',
+                 *args, **kwargs):
+        '''
+        For a given user, sample its queries and bag words of sampled queries
+        :param data_stream:
+        :param sample_sources: name of query mask
+        :param sample_prob:
+        :param kwargs:
+        :return:
+        '''
+        super(ConQuerySample, self).__init__(
+            data_stream, produces_examples=False, **kwargs)
+        self.sample_source_mask = sample_source_mask
+        self.sample_num = sample_num
+        self._initialize()
+
+    def _initialize(self):
+        pass
+
+    def transform_batch(self, batch):
+        batch_with_samplings = []
+        for source, source_batch in zip(self.data_stream.sources, batch):
+            if source != self.sample_source_mask:
+                batch_with_samplings.append(source_batch)
+                continue
+            query_mask = source_batch
+            full_idxes = numpy.arange(len(query_mask[0]))
+            masks = []
+            for mask in query_mask:
+                idxes = full_idxes[mask[:, 0] > 0.]
+                numpy.random.shuffle(idxes)
+                mask[idxes[min(len(idxes), self.sample_num):], :] = 0.
+                masks.append(mask)
+            batch_with_samplings.append(numpy.array(masks, dtype=query_mask.dtype))
+        return tuple(batch_with_samplings)
+
+
 class QueryMerge(Transformer):
     '''Merge queries of a user into bag of words'''
     def __init__(self, data_stream, merge_source='query', *args, **kwargs):
@@ -119,7 +157,7 @@ class QueryMerge(Transformer):
         batch_merged = []
         new_mask = None
         for source, source_batch in zip(self.data_stream.sources, batch):
-            if source != self.sample_source:
+            if source != self.merge_source:
                 batch_merged.append(source_batch)
                 continue
             queries = []
@@ -136,7 +174,7 @@ class QueryMerge(Transformer):
                 new_batch[i][0:len(queries[i])] = queries[i]
                 new_mask[i][0:len(queries[i])] = 1.
             batch_merged.append(new_batch)
-        batch_merged[self.data_stream.sources.index[self.merge_source+'_mask']] = new_mask
+        batch_merged[self.data_stream.sources.index(self.merge_source+'_mask')] = new_mask
         return tuple(batch_merged)
 
 

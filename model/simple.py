@@ -17,11 +17,11 @@ class LRModel(AbstractModel):
                  input_dim,
                  input_name,
                  output_name,
-                 input_mask_name = None,
-                 noised_output_name = None,
+                 input_mask_name=None,
+                 noised_output_name=None,
                  norm_type='l2_norm',
                  norm_scale=1e-4,
-                 label_weight = None,
+                 label_weight=None,
                  *args, **kwargs):
         '''
         Define a logistical regression model
@@ -67,13 +67,6 @@ class LRModel(AbstractModel):
         self._consider_constant = [self.label_weight]
         self._build_model()
 
-    def _build_model(self, *args, **kwargs):
-        # Define inputs
-        self._define_inputs()
-        self._build_bricks()
-        self._get_cost()
-        self._apply_reg()
-
     def _define_inputs(self, *args, **kwargs):
         self.input = tensor.imatrix(self.input_name)
         self.input_mask = tensor.matrix(self.input_mask_name, dtype=theano.config.floatX)
@@ -83,31 +76,25 @@ class LRModel(AbstractModel):
         
     def _build_bricks(self, *args, **kwargs):
         # Build lookup tables
-        self.input_lookup = self._build_lookup(name = self.input_name+'_lookup',
+        self.input_lookup = self._build_lookup(name=self.input_name+'_lookup',
                                                word_num=self.input_dim,
-                                               dim = self.label_num)
+                                               dim=self.label_num)
         self.input_bias = Vector(name=self.input_name+'_bias', dim=self.label_num)
         self.input_bias.biases_init = Constant(0.)
         self.input_bias.initialize()
 
-    def _build_lookup(self, name, word_num, dim=1, *args, **kwargs):
+    def _build_lookup(self, name, word_num, dim=1):
         lookup = LookupTable(length=word_num, dim=dim, name=name)
         lookup.weights_init = Constant(1. / word_num ** 0.25)
         lookup.initialize()
         return lookup
 
-    def _get_pred_dist(self, *args, **kwargs):
-
+    def _get_pred_dist(self):
         outputs = self.input_bias.apply((self.input_lookup.apply(self.input) * self.input_mask[:, :, None]).sum(axis=1))
         return outputs
 
-    def _get_cost(self, *args, **kwargs):
-        self._get_train_cost(*args, **kwargs)
-        self._get_valid_cost(*args, **kwargs)
-        self._get_test_cost(*args, **kwargs)
-
-    def _get_train_cost(self, *args, **kwargs):
-        pred_output = self._get_pred_dist(*args, **kwargs)
+    def _get_train_cost(self):
+        pred_output = self._get_pred_dist()
 
         self.pred = tensor.argmax(pred_output, axis=1)
         if self.noised_output_name is not None:
@@ -118,33 +105,30 @@ class LRModel(AbstractModel):
         cost.name = 'cost'
         accuracy = tensor.eq(self.output, self.pred).mean()
         accuracy.name = 'accuracy'
-        self._train_monitors = [cost, accuracy]
         self._train_cg_generator = cost
+        self._train_monitors = [cost, accuracy]
+        self._valid_monitors = [accuracy, cost]
+        self._test_monitors =[accuracy, cost]
+        self._predict_monitor = [self.pred]
 
-    def _get_valid_cost(self, *args, **kwargs):
-        self._valid_monitors = self.train_monitors
-        self._valid_cg_generator = self.pred
+    def _apply_reg(self, params=None):
+        '''Apply regularization (default L2 norm) on parameters (default user, hashtag and word embedding) to computing
+           graph of self.cg_generator
 
-    def _get_test_cost(self, *args, **kwargs):
-        self._test_cg_generator = self.pred
-        self._test_monitors = [self.pred]
-
-    def _apply_reg(self, params=None, *args, **kwargs):
-        '''
-        Apply regularization (default L2 norm) on parameters (default user, hashtag and word embedding) to computing
-        graph of self.cg_generator
         :param params: A list of parameters to which regularization applied
         '''
         if self.norm_type is not None:
             params = [self.input_lookup.W]
             if self.norm_type == 'l2_norm':
-                self._train_cg_generator = self._train_cg_generator + self.norm_scale * theano_expressions.l2_norm(tensors=params) ** 2
+                self._train_cg_generator += self.norm_scale * theano_expressions.l2_norm(tensors=params) ** 2
             elif self.norm_type == 'l1_norm':
                 norm = 0.
                 for param in params:
                     norm += tensor.abs_(param).sum()
-                self._train_cg_generator = self._train_cg_generator + self.norm_scale * norm
+                self._train_cg_generator += self.norm_scale * norm
             else:
                 raise ValueError('{0} norm type is not supported!'.format(self.norm_type))
         else:
             pass
+
+

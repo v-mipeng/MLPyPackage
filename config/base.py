@@ -1,6 +1,6 @@
 import os
 
-from blocks.algorithms import BasicMomentum, AdaDelta, AdaGrad, RMSProp, Adam, CompositeRule, StepClipping, Momentum, Scale
+from blocks.algorithms import AdaDelta
 
 
 class BasicConfig:
@@ -28,48 +28,75 @@ class BasicConfig:
         self.wait_times = 20
 
         self.valid_proportion = 0.2
+        self.test_proportion = 0.2
 
-    @property
-    def Model(self):
-        '''Get model class
+        # Random seed used for random value generation
+        self.seed = 1234
 
-        :return: Instance of subclass: pml.model.AbstractModel
+    def get_model(self):
+        '''Get model object
+
+        This should provide a model object which implements the interfaces of pml.model.AbstractModel.
+        The object is constructed with the self.attributions
+
         '''
-        if not hasattr(self, '_Model'):
-            raise NotImplementedError
-        return self._Model
-    
-    @Model.setter
-    def Model(self, value):
-        self._Model = value
+        raise NotImplementedError
 
-    @property
-    def Dataset(self):
-        '''Get dataset class
+    def get_dataset(self):
+        '''Get dataset object
 
-        :return: instance of subclass:AbstractDataset
+        This should provide a dataset object which implements the interfaces of pml.dataset.base.AbstractDataset.
+
         '''
-        if not hasattr(self, '_Dataset'):
-            raise NotImplementedError
-        return self._Dataset
+        raise NotImplementedError
 
-    @Dataset.setter
-    def Dataset(self, value):
-        self._Dataset = value
+    def get_model_saver_loader(self):
+        '''Get model saver loader object
 
-    @property
-    def ModelSaverLoader(self):
-        '''Get model saver loader class
+        This should provide a model_saver_loader object which implements the interfaces of
+        pml.model.saveload.AbstractModelSaverLoader.
 
-        :return: instance of subclass: pml.model.AbstractModelSaverLoader
         '''
-        if not hasattr(self, '_ModelSaverLoader'):
-            raise NotImplementedError
-        return self._ModelSaverLoader
+        raise NotImplementedError
 
-    @ModelSaverLoader.setter
-    def ModelSaverLoader(self, value):
-        self._ModelSaverLoader = value
+    def get_train_dataset_reader_writer(self):
+        '''Get dataset reader writer object
+
+        This should provide a dataset_reader_writer object which implements the interfaces of
+        pml.dataset.readwrite.AbstractDatasetReaderWriter.
+
+        '''
+
+        raise NotImplementedError
+
+    def get_predict_dataset_reader_writer(self):
+        '''Get dataset reader writer object
+
+        This should provide a dataset_reader_writer object which implements the interfaces of
+        pml.dataset.readwrite.AbstractDatasetReaderWriter.
+
+        '''
+        raise NotImplementedError
+
+    def get_preprocessor(self):
+        '''Get a piped preprocessor
+
+        This should provide a piped preprocessor object which implement the interfaces of
+        pml.dataset.preprocessor.AbstractPreprocessor
+
+        :return: pml.dataset.preprocessor.AbstractPreprocessor
+                Default None
+        '''
+        # Example
+        # preprocessor = Tokenizer(source_name='text', result_source_name='tokenized_text') +
+        #                SparseTokenFilter(source_name='tokenized_text',
+        #                                   result_source_name='doc_sparse_filtered',
+        #                                   sparse_threshold=1,
+        #                                   backup_token=None,
+        #                                   remove_empty=True)
+        # return preprocessor
+        #
+        return None
 
     @property
     def model_load_from(self):
@@ -78,7 +105,7 @@ class BasicConfig:
         :return: str
         '''
         if not hasattr(self, '_model_load_from'):
-            raise NotImplementedError
+            return None
         return self._model_load_from
     
     @model_load_from.setter
@@ -92,7 +119,7 @@ class BasicConfig:
         :return: str
         '''
         if not hasattr(self, '_model_save_to'):
-            raise NotImplementedError
+            return None
         return self._model_save_to
 
     @model_save_to.setter
@@ -106,7 +133,7 @@ class BasicConfig:
         :return: str
         '''
         if not hasattr(self, '_dataset_param_load_from'):
-            raise NotImplementedError
+            return None
         return self._dataset_param_load_from
 
     @dataset_param_load_from.setter
@@ -120,7 +147,7 @@ class BasicConfig:
         :return: str
         '''
         if not hasattr(self, '_dataset_param_save_to'):
-            raise NotImplementedError
+            return None
         return self._dataset_param_save_to
 
     @dataset_param_save_to.setter
@@ -134,7 +161,7 @@ class BasicConfig:
         :return: str
         '''
         if not hasattr(self, '_train_data_load_from'):
-            raise NotImplementedError
+            return None
         return self._train_data_load_from
 
     @train_data_load_from.setter
@@ -142,15 +169,15 @@ class BasicConfig:
         self._train_data_load_from = value
 
     @property
-    def test_data_load_from(self):
+    def predict_data_load_from(self):
         '''Get file path to load testing dataset
         
         :return: str
         '''
         if not hasattr(self, '_test_data_load_from'):
-            raise NotImplementedError
-        return self._test_data_load_from
+            return None
+        return self._predict_data_load_from
 
-    @test_data_load_from.setter
-    def test_data_load_from(self, value):
-        self._test_data_load_from = value
+    @predict_data_load_from.setter
+    def predict_data_load_from(self, value):
+        self._predict_data_load_from = value

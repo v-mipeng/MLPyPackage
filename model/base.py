@@ -1,10 +1,38 @@
+from abc import abstractmethod
+
 import theano
 from theano import tensor
 
 
 class AbstractModel(object):
-    def __init__(self):
-        pass
+    def __init__(self, name=None):
+        '''Build model
+
+        This class should provide computing graph generator for training, validation and testing. Besides,
+        it should also offer some monitors for the three processes
+        :param config: pml.config.base.BasicConfig
+                System configuration object
+        :param dataset: pml.dataset.base.AbstractDataset
+                The dataset providing training, validation and testing streams
+        '''
+        if name is None:
+            name = ''
+        self.name = name
+        self._built = False
+        self._consider_constant = []
+
+    @property
+    def built(self):
+        if self._built:
+            return True
+        else:
+            return False
+
+    def build_model(self):
+        self._define_inputs()
+        self._build_bricks()
+        self._get_cost()
+        self._built = True
 
     @property
     def train_cg_generator(self):
@@ -25,22 +53,29 @@ class AbstractModel(object):
         if hasattr(self, '_valid_cg_generator'):
             return self._valid_cg_generator
         else:
-            raise NotImplementedError('valid_cg_generator is not defined!')
+            return self.train_cg_generator
 
     @property
     def test_cg_generator(self):
-        '''Get computing graph generator for training
-
-        Usually you should use this generator to build a computing graph and initialize it with trained
-        parameters. Then you should use test monitors to build prediction functions. For single task system,
-        the test generator and test monitor are the same, while for multi-task system, they usually differ.
-        :return: TheanoVariable.scalar
-        '''
+        
         if hasattr(self, '_test_cg_generator'):
             return self._test_cg_generator
         else:
-            raise NotImplementedError('test_cg_generator is not defined!')
-
+            return self.valid_cg_generator
+    
+    @property
+    def predict_cg_generator(self):
+        '''Get computing graph generator for testing
+        
+        Usually you should use this generator to build a computing graph and initialize it with trained
+        parameters. Then you use predict monitors to build prediction functions.
+        :return: TheanoVariable.scalar
+        '''
+        if hasattr(self, '_predict_cg_generator'):
+            return self._predict_cg_generator
+        else:
+            return self.train_cg_generator
+    
     @property
     def consider_constant(self):
         '''Get parameters that should not be updated.
@@ -89,32 +124,62 @@ class AbstractModel(object):
         else:
             raise NotImplementedError('test_monitors are not defined!')
 
-    def _build_model(self):
-        self._define_inputs()
-        self._build_bricks()
-        self._get_cost()
+    @property
+    def predict_monitors(self):
+        '''Get symbolic variables to build functions for prediction on predicting dataset
 
-    def _define_inputs(self):
+        :return: List of class: TheanoVariable.scalar
+                Commonly, the most likely prediction of given input
+        '''
+        if hasattr(self, '_predict_monitors'):
+            return self._predict_monitors
+        else:
+            raise NotImplementedError('predict_monitors are not defined!')
+
+    @abstractmethod
+    def _define_inputs(self, *args, **kwargs):
         '''Define the input of this model'''
         raise NotImplementedError('_define_inputs is not defined!')
 
-    def _build_bricks(self):
+    @abstractmethod
+    def _build_bricks(self, *args, **kwargs):
         '''Define bricks of this model'''
         raise NotImplementedError('_build_bricks is not defined')
+
+    @abstractmethod
+    def _get_train_cost(self, *args, **kwargs):
+        raise NotImplementedError
+
+    @abstractmethod
+    def _get_valid_cost(self, *args, **kwargs):
+        pass
+
+    def _get_test_cost(self, *args, **kwargs):
+        self._get_valid_cost(*args, **kwargs)
+
+    @abstractmethod
+    def _get_predict_cost(self, *args, **kwargs):
+        raise NotImplementedError
+
+    @abstractmethod
+    def _apply_reg(self):
+        '''Add regularization, e.g. l2 norm, on parameters
+
+        This should add regularization on system lost and update training computing graph
+        '''
+        pass
+
+    @abstractmethod
+    def _apply_noise(self):
+        '''Add noise on parameters like dropout'''
+        pass
 
     def _get_cost(self):
         self._get_train_cost()
         self._get_valid_cost()
         self._get_test_cost()
-
-    def _get_train_cost(self, *args, **kwargs):
-        raise NotImplementedError
-
-    def _get_valid_cost(self, *args, **kwargs):
-        raise NotImplementedError
-
-    def _get_test_cost(self, *args, **kwargs):
-        raise NotImplementedError
+        self._apply_reg()
+        self._apply_noise()
 
     def log_probabilities(self, input_):
         """Normalize log-probabilities.
@@ -172,3 +237,10 @@ class AbstractModel(object):
         return cost
 
 
+class AbstractEmbedModel(AbstractModel):
+    '''Abstract model which used embedding.
+
+    This is designed to only calculate gradients on input related embeddings and
+
+    '''
+    pass

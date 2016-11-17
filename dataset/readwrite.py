@@ -6,7 +6,35 @@ The loaded dataset is converted into a RawDataset object.
 
 import pandas as pd
 
-from pml.dataset.base import RawDataset
+from pml.dataset.base import DatasetContainer
+
+
+class AbstractDatasetReaderWriter(object):
+    '''Read and write raw dataset
+
+    For a specific dataset, user should inherit this class and implement the read_dataset and save_dataset methods
+
+    read_dataset: read raw dataset from files and return a pml.dataset.base.DatasetContainer instance
+    save_dataset: define how to save a pml.dataset.base.DatasetContainer instance
+
+    '''
+    def __init__(self, read_from=None, save_to=None):
+        self.read_from = read_from
+        self.save_to = save_to
+
+    def read_dataset(self, read_from=None):
+        '''Read raw dataset from disk
+
+        :return: pml.dataset.base.DatasetContainer
+        '''
+        raise NotImplementedError
+
+    def save_dataset(self, dataset, save_to=None):
+        '''Save dataset into file
+
+        :param dataset: pml.dataset.base.DatasetContainer
+        '''
+        raise NotImplementedError
 
 
 def reade_csv(read_from, names, sep='\t',usecols=None, **kwargs):
@@ -31,8 +59,8 @@ def reade_csv(read_from, names, sep='\t',usecols=None, **kwargs):
     :param kwargs:
             Parameter to control the reading.
             Refer pandas for more detail information
-    :return: pml.dataset.base.RawDataset
-            An instance of RawDataset
+    :return: pml.dataset.base.DatasetContainer
+            An instance of DatasetContainer
 
     --Sample--
 
@@ -54,12 +82,12 @@ def reade_csv(read_from, names, sep='\t',usecols=None, **kwargs):
     dataset = pd.read_csv(filepath_or_buffer=read_from, names=names, sep=sep, usecols=usecols, error_bad_lines=False,
                           warn_bad_lines=True, encoding='utf-8',
                           *kwargs)
-    return RawDataset(dataset.to_dict('list'))
+    return DatasetContainer(dataset.to_dict('list'))
 
 
 def read_excel(*args, **kwargs):
     dataset = pd.read_excel(*args, **kwargs)
-    return RawDataset(dataset.to_dict('list'))
+    return DatasetContainer(dataset.to_dict('list'))
 
 
 def read_json(*args, **kwargs):
@@ -141,4 +169,4 @@ def read_json(*args, **kwargs):
     result : Series or DataFrame
     """
     dataset = pd.read_json(*args, **kwargs)
-    return RawDataset(dataset.to_dict('list'))
+    return DatasetContainer(dataset.to_dict('list'))

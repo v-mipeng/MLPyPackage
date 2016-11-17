@@ -10,18 +10,30 @@ from fuel.schemes import ShuffledExampleScheme, SequentialExampleScheme
 from fuel.streams import DataStream
 
 
-class RawDataset(object):
-    '''Raw dataset container
-
-    '''
+class DatasetContainer(object):
+    '''Dataset container'''
     def __init__(self, raw_dataset):
+        if raw_dataset is None:
+            raw_dataset = {}
         self.raw_dataset = raw_dataset
         self.check_dim()
+        # Turn element to be numpy.ndarray
+        for key in self.raw_dataset.keys():
+            try:
+                self.raw_dataset[key] = np.array(raw_dataset[key])
+            except ValueError:
+                self.raw_dataset[key] = np.array(raw_dataset[key],dtype='O')
 
     def __getitem__(self, source):
         return self.raw_dataset[source]
 
     def __setitem__(self, key, value):
+        if not len(value) != self.sample_num:
+            raise ValueError('Dimension mismatch!')
+        try:
+            value = np.asarray(value)
+        except ValueError:
+            value = np.array(value, dtype='O')
         self.raw_dataset[key] = value
 
     def __len__(self):
@@ -57,7 +69,10 @@ class RawDataset(object):
 
     @property
     def sample_num(self):
-        return len(self.raw_dataset.values()[0])
+        if len(self.raw_dataset) == 0:
+            return 0
+        else:
+            return len(self.raw_dataset.values()[0])
 
     def keys(self):
         return self.raw_dataset.keys()
@@ -87,7 +102,7 @@ class RawDataset(object):
         :param seed: int
                 Seed for shuffled the dataset. If shuffled is True and no seed given or
                 set to be None (default), the dataset will be shuffled randomly.
-        :return: tuple of instances of RawDataset
+        :return: tuple of instances of DatasetContainer
                 Training dataset and testing dataset
         '''
         sample_num = self.sample_num
@@ -107,7 +122,7 @@ class RawDataset(object):
             for key, value in self.raw_dataset.items():
                 train_raw_dataset[key] = value[train_idxes]
                 valid_raw_dataset[key] = value[valid_idxes]
-            yield (RawDataset(train_raw_dataset), RawDataset(valid_raw_dataset))
+            yield (DatasetContainer(train_raw_dataset), DatasetContainer(valid_raw_dataset))
 
     def split(self, proportion, shuffled=True, seed=None):
         '''Split the dataset into two parts
@@ -118,15 +133,16 @@ class RawDataset(object):
         you can use this method to split out validation and testing parts.
 
         :param proportion: float
-                The proportion of the first part
-                size(first part) = portion * size(all dataset)
+                The proportion of the second part
+                size(first part) = (1-portion)*size(all dataset)
+                size(second part) = portion * size(all dataset)
         :param shuffled: bool
                 Indicator if shuffle the dataset before splitting, default is True
         :param seed: int
                 Seed for shuffled the dataset. If shuffled is True and no seed given or
                 set to be None (default), the dataset will be shuffled randomly.
-        :return: tuple of instances of RawDataset
-                Training dataset and testing dataset
+        :return: tuple of instances of DatasetContainer
+                Training dataset and validation dataset
         '''
         sample_num = self.sample_num
         part_one_num = int(sample_num * proportion)
@@ -142,7 +158,7 @@ class RawDataset(object):
         for key, value in self.raw_dataset.items():
             raw_dataset_one[key] = value[idxes_one]
             raw_dataset_two[key] = value[idxes_two]
-        return (RawDataset(raw_dataset_one), RawDataset(raw_dataset_two))
+        return (DatasetContainer(raw_dataset_two), DatasetContainer(raw_dataset_one))
 
 
 class AbstractDataset(object):
@@ -188,125 +204,100 @@ class AbstractDataset(object):
         methods
 
     '''
-    def __init__(self):
-        self.provide_train_sources = None
-        self.provide_test_sources = None
-        self.initialized = False
+    def __init__(self, name=None):
+        self._initialized = False
+        if name is None:
+            name = ''
+        self.name = name
 
     @property
-    def train_sample_num(self):
-        '''Get number of training sample
-
-        :return: int
-        '''
-        if hasattr(self, '_train_sample_num'):
-            assert isinstance(self._train_sample_num, int)
-            return self._train_sample_num
+    def initialized(self):
+        if self._initialized:
+            return True
         else:
-            return 0
+            return False
 
     @property
-    def valid_sample_num(self):
-        '''Get number of validation sample
-
-        :return: int
-        '''
-        if hasattr(self, '_valid_sample_num'):
-            assert isinstance(self._valid_sample_num, int)
-            return self._valid_sample_num
+    def train_dataset(self):
+        if hasattr(self, '_train_dataset'):
+            return self._train_dataset
         else:
-            return 0
+            return None
 
     @property
-    def test_sample_num(self):
-        '''Get number of testing sample
-
-        :return: int
-        '''
-        if hasattr(self, '_test_sample_num'):
-            assert isinstance(self._test_sample_num, int)
-            return self._test_sample_num
+    def valid_dataset(self):
+        if hasattr(self, '_valid_dataset'):
+            return self._valid_dataset
         else:
-            return 0
+            return None
+
+    @property
+    def test_dataset(self):
+        if hasattr(self, '_test_dataset'):
+            return self._test_dataset
+        else:
+            return None
+    
+    @property
+    def predict_dataset(self):
+        if hasattr(self, '_predict_dataset'):
+            return self._predict_dataset
+        else:
+            return None
 
     @abstractmethod
     def _process_before_mapping_for_train(self, raw_dataset):
-        '''Process training raw dataset before mapping samples into integer representation
-
-         This method is designed to do pre-processing, e.g. statistic word frequency on training dataset.
-        :param raw_dataset: list, tuple or numpy.ndarray
-                A container of training samples
-        :return: list
-                A list of processed samples
-        '''
+        '''Process training raw dataset before mapping samples into integer representation'''
         return raw_dataset
 
     @abstractmethod
     def _process_before_mapping_for_valid(self, raw_dataset):
-        '''Process valid raw dataset before mapping samples into integer representation
-
-         This method is designed to do pre-processing, e.g. statistic word frequency, on raw dataset
-         on valid raw dataset.
-        :param raw_dataset: list, tuple or numpy.ndarray
-                A contaniner of valid samples
-        :return: list
-                A list of processed samples
-        '''
         return raw_dataset
 
-    @abstractmethod
     def _process_before_mapping_for_test(self, raw_dataset):
-        '''Process test raw dataset before mapping samples into integer representation
+        return self._process_before_mapping_for_valid(raw_dataset)
 
-         This method is designed to do pre-processing, e.g. statistic word frequency, on raw dataset
-         on test raw dataset.
-        :param raw_dataset: list, tuple or numpy.ndarray
-                A contaniner of test samples
-        :return: list
-                A list of processed samples
-        '''
+    @abstractmethod
+    def _process_before_mapping_for_predict(self, raw_dataset):
         return raw_dataset
 
     @abstractmethod
     def _map_for_train(self, raw_dataset):
-        '''Map training raw dataset into integer representation dataset
-
-        :param raw_dataset: dict
-                    This stores the attributes of training samples. Every item corresponds an attribute and
-                    the length of each attribute should be the same.
-        :return: tuple
-                A tuple of numpy.ndarray. Each element corresponds, in order, one field of the dataset defined in
-                self.provide_train_sources.
-        '''
+        '''Map training raw dataset into integer representation dataset'''
         raise NotImplementedError
 
     @abstractmethod
     def _map_for_valid(self, raw_dataset):
         raise NotImplementedError
 
-    @abstractmethod
     def _map_for_test(self, raw_dataset):
+        return self._map_for_valid(raw_dataset)
+    
+    @abstractmethod
+    def _map_for_predict(self, raw_dataset):
         raise NotImplementedError
 
     @abstractmethod
     def _process_after_mapping_for_train(self, dataset):
         '''Process mapped training dataset
+
+        :param dataset: pml.dataset.base.DatasetContainer
         '''
-        self._train_sample_num = len(dataset[0])
         return dataset
 
     @abstractmethod
     def _process_after_mapping_for_valid(self, dataset):
-        self._valid_sample_num = len(dataset[0])
         return dataset
 
-    @abstractmethod
     def _process_after_mapping_for_test(self, dataset):
-        self._test_sample_num = len(dataset[0])
+        return self._process_after_mapping_for_valid(dataset)
+
+    @abstractmethod
+    def _process_after_mapping_for_predict(self, dataset):
         return dataset
 
     @abstractmethod
-    def _construct_shuffled_stream(self, dataset, for_type = 'train'):
+    def _construct_shuffled_stream(self, dataset, for_type='train'):
         '''Construc a shuffled stream from an IndexableDataset object
 
         Subclass should add transformation on the stream, e.g.,
@@ -321,7 +312,7 @@ class AbstractDataset(object):
         '''
         it = ShuffledExampleScheme(dataset.num_examples)
         stream = DataStream(dataset, iteration_scheme=it)
-        # Sort samples by size and compact samples with similar size into a batch.
+        # # Sort samples by size and compact samples with similar size into a batch.
         # stream = Batch(stream, iteration_scheme=ConstantScheme(self.batch_size * self.sort_batch_count))
         # comparison = _balanced_batch_helper(stream.sources.index(self.compare_source))
         # stream = Mapping(stream, SortMapping(comparison))
@@ -333,7 +324,7 @@ class AbstractDataset(object):
         return stream
 
     @abstractmethod
-    def _construct_sequential_stream(self, dataset, for_type = 'train'):
+    def _construct_sequential_stream(self, dataset, for_type='train'):
         '''Construc a sequential stream from an IndexableDataset object
         '''
         it = SequentialExampleScheme(dataset.num_examples)
@@ -364,9 +355,9 @@ class AbstractDataset(object):
                 raise IOError('File:{0} does not exist!'.format(param_load_from))
             else:
                 self._load_parameter(param_load_from)
-            self.initialized = True
+            self._initialized = True
         except Exception as e:
-            self.initialized = False
+            self._initialized = False
             raise e
 
     def save(self, param_save_to):
@@ -384,13 +375,13 @@ class AbstractDataset(object):
         :param preserved_attributes: set
                 Set of attributes to be preserved during resetting
         '''
-        preserved_attrs = {'provide_train_sources', 'provide_test_sources'}
+        preserved_attrs = {}
         if preserved_attrs is not None:
             preserved_attrs.update(preserved_attrs)
         for attr in self.__dict__.keys():
             if attr not in preserved_attrs:
                 setattr(self, attr, None)
-        self.initialized = False
+        self._initialized = False
 
     def _load_parameter(self, param_load_from):
         '''Load dataset from a pickled file
@@ -406,7 +397,7 @@ class AbstractDataset(object):
             attributes = cPickle.load(f)
             for attr, value in attributes.iteritems():
                 setattr(self, attr, value)
-            self.initialized = True
+            self._initialized = True
 
     def _save_parameter(self, param_save_to):
         '''Dump current dataset into file
@@ -417,18 +408,17 @@ class AbstractDataset(object):
         with open(param_save_to, 'wb+') as f:
             cPickle.dump(self.__dict__, f)
 
-    def get_train_stream(self, raw_dataset, it='shuffled'):
+    def get_train_stream(self, raw_dataset=None, it='shuffled'):
         '''Construct a fuel.stream object for training from the raw dataset.
 
-        It should do some processings on the raw dataset, like mapping string type of words into integer
+        It should do some processing on the raw dataset, like mapping string type of words into integer
         representation, mapping true labels and predicted labels, extracting training data information,
         padding and shuffling samples and so on.
 
-        :param raw_dataset: dic
-                    This stores the attributes of training samples. Every item corresponds an attribute and
-                    the length of each attribute should be the same.
-                    e.g., raw_dataset = [np.array(ids),np.array(ages),np.array(genders)] and
-                    len(ids) == len(ages) == len(genders)
+        :param raw_dataset: pml.dataset.base.DatasetContainer
+                    This stores the attributes of training samples. If it is None (defaule), the existed train_dataset
+                    will be used to construct training stream. This is usually used during tuning hyper-parameters of
+                    transformation
         :param it: str
                 Assign the iteration schema used in fuel.stream. If it is 'shuffled' (default), samples
                 will be shuffled before feeding into training, this is necessary for trainig with Stochastic
@@ -436,16 +426,16 @@ class AbstractDataset(object):
                 Optional, 'sequential' is also supported, this option is usually used from testing or
                 validation where sample order is important for index consistent.
         :return: fuel.stream
-                This is typically feeded into the training processing.
+                This is typically fed into the training processing.
         '''
         try:
-            self.initialized = True
+            self._initialized = True
             return self._get_stream(raw_dataset, it, for_type='train')
         except Exception as e:
-            self.initialized = False
+            self._initialized = False
             raise e
 
-    def get_valid_stream(self, raw_dataset, it='sequential'):
+    def get_valid_stream(self, raw_dataset=None, it='sequential'):
         '''Construct a fuel.stream object for validation from the raw dataset.
         '''
         if self.initialized:
@@ -453,25 +443,45 @@ class AbstractDataset(object):
         else:
             raise Exception('Cannot obtain validation stream for dataset has not been initialized!')
 
-    def get_test_stream(self, raw_dataset, it='sequential'):
-        '''Construct a fuel.stream object for test from the raw dataset.
-                This is typically fed into the test processing.
-        '''
+    def get_test_stream(self, raw_dataset=None, it='sequential'):
         if self.initialized:
             return self._get_stream(raw_dataset, it, for_type='test')
         else:
             raise Exception('Cannot obtain testing stream for dataset has not been initialized!')
 
+    def get_predict_stream(self, raw_dataset=None, it='sequential'):
+        if self.initialized:
+            return self._get_stream(raw_dataset, it, for_type='predict')
+        else:
+            raise Exception('Cannot obtain predicting stream for dataset has not been initialized!')
+
     def _get_stream(self, raw_dataset, it='shuffled', for_type='train'):
-        if not isinstance(raw_dataset, dict) or len(raw_dataset) == 0:
-            raise ValueError('raw_dataset should be a non empty dict!')
-        compared_source = raw_dataset.values()[0]
-        if not all([len(field) == len(compared_source) for field in raw_dataset.values()]):
-            raise ValueError('Field dimension mismatch!')
-        raw_dataset = self._process_before_mapping(raw_dataset, for_type)
-        dataset = self._map(raw_dataset, for_type)
-        dataset = self._process_after_mapping(dataset, for_type)
-        dataset = self._construct_dataset(dataset, for_type)
+        if raw_dataset is not None:
+            if not isinstance(raw_dataset, dict) or len(raw_dataset) == 0:
+                raise ValueError('raw_dataset should be a non empty dict!')
+            compared_source = raw_dataset.values()[0]
+            if not all([len(field) == len(compared_source) for field in raw_dataset.values()]):
+                raise ValueError('Field dimension mismatch!')
+            raw_dataset = self._process_before_mapping(raw_dataset, for_type)
+            dataset = self._map(raw_dataset, for_type)
+            dataset = self._process_after_mapping(dataset, for_type)
+            dataset = self._construct_dataset(dataset)
+            if for_type == 'train':
+                self._train_dataset = dataset
+            elif for_type == 'valid':
+                self._valid_dataset = dataset
+            elif for_type == 'test':
+                self._test_dataset = dataset
+            else:
+                self._predict_dataset = dataset
+        elif for_type == 'train':
+            dataset = self.train_dataset
+        elif for_type == 'valid':
+            dataset = self.valid_dataset
+        elif for_type == 'test':
+            dataset = self.test_dataset
+        else:
+            dataset = self.predict_dataset
         if it == 'shuffled':
             return self._construct_shuffled_stream(dataset, for_type)
         elif it == 'sequential':
@@ -482,14 +492,12 @@ class AbstractDataset(object):
     def _map(self, raw_dataset, for_type):
         '''Map raw dataset into integer representation dataset
 
-        :param raw_dataset: dict
-                This stores the attributes of training samples. Every item corresponds an attribute and
-                the length of each attribute should be the same.
+        :param raw_dataset: pml.dataset.base.DatasetContainer
+                This stores the attributes of training samples.
         :param for_type: str
                 Indicator of the usage of the raw dataset
-        :return: tuple
-                A tuple of numpy.ndarray. Each element corresponds, in order, one field of the dataset defined in
-                self.provide_train_sources.
+        :return: pml.dataset.base.DatasetContainer
+                New DatasetContainer object
         '''
         if for_type == 'train':
             return self._map_for_train(raw_dataset)
@@ -541,18 +549,14 @@ class AbstractDataset(object):
         else:
             raise ValueError('{0} for "for_type" is not supported!'.format(for_type))
 
-    def _construct_dataset(self, dataset, for_type):
+    def _construct_dataset(self, dataset):
         '''Construct an fuel indexable dataset.
 
         Every field corresponds to the name.
         :param dataset: A tuple of numpy.ndarray
         :return: instance of IndexableDataset
         '''
-        if for_type == 'train' or for_type == 'valid':
-            sources = self.provide_train_sources
-        else:
-            sources = self.provide_test_sources
-        return IndexableDataset(indexables=OrderedDict(zip(sources, dataset)))
+        return IndexableDataset(indexables=OrderedDict(zip(dataset.keys(), dataset.values())))
 
 
 class AbstractClassificationDataset(AbstractDataset):
@@ -564,7 +568,7 @@ class AbstractClassificationDataset(AbstractDataset):
         :return: int
             The number of labels. This is typical for classification problem.
         '''
-        raise NotImplementedError
+        return len(self.true_label2pred_label)
 
     @property
     def true_label2pred_label(self):
@@ -623,7 +627,7 @@ class AbstractDocClassificationDataset(AbstractClassificationDataset):
 def test_raw_dataset():
     sources = ['name', 'age', 'gender']
     values = [np.random.rand(10), np.random.rand(10), np.random.rand(10)]
-    raw_dataset = RawDataset(dict(zip(sources, values)))
+    raw_dataset = DatasetContainer(dict(zip(sources, values)))
     for train, valid in raw_dataset.cross_split(proportion=0.2, shuffled=False):
         pass
     print(len(raw_dataset))
