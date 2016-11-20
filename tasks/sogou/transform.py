@@ -1,18 +1,114 @@
 import theano
 import numpy as np
-from fuel.transformers import Transformer, Padding
+from fuel.schemes import ConstantScheme
+
+from pml.dataset.transform import (Transformer, Batch, Padding, Mapping, SortMapping,
+                                   Unpack)
+
+
+class SogouMultiTaskTrainTransformer(Transformer):
+    def __init__(self, config, **kwargs):
+        super(SogouMultiTaskTrainTransformer, self).__init__(**kwargs)
+        self.config = config
+
+    def apply(self, data_stream):
+        return self._build_transformer(data_stream).apply(data_stream)
+
+    def _build_transformer(self, stream):
+        transformer = Batch(iteration_scheme=ConstantScheme(self.config.batch_size *
+                                                          self.config.sort_batch_count))
+
+        comparison = _balanced_batch_helper(stream.sources.index('query'))
+
+        transformer += Mapping(SortMapping(comparison))
+        transformer += Unpack()
+        transformer += Batch(iteration_scheme=ConstantScheme(self.config.batch_size))
+        transformer += MatrixPadding(mask_sources=['query'], mask_dtype=theano.config.floatX)
+        # Sample queries
+        transformer += CountQuerySample(sample_num=self.config.query_sample_num)
+        # Merge queries
+        transformer += QueryMerge(merge_source='query')
+
+        transformer += OutputNoise(output_source='age',
+                                 label2freq=self.config.dataset.get_label2freq('age'),
+                                 max_noise_prob=self.config.age_max_noise,
+                                 decay_rate=self.config.age_decay_rate)
+        transformer += OutputNoise(output_source='gender',
+                                 label2freq=self.config.dataset.get_label2freq('gender'),
+                                 max_noise_prob=self.config.gender_max_noise,
+                                 decay_rate=self.config.gender_decay_rate)
+        transformer += OutputNoise(output_source='edu',
+                                 label2freq=self.config.dataset.get_label2freq('edu'),
+                                 max_noise_prob=self.config.edu_max_noise,
+                                 decay_rate=self.config.edu_decay_rate)
+        return transformer
+
+
+class SogouSingleTaskTrainTransformer(SogouMultiTaskTrainTransformer):
+    
+    def _build_transformer(self, stream):
+        transormer = Batch(iteration_scheme=ConstantScheme(self.config.batch_size *
+                                                          self.config.sort_batch_count))
+
+        comparison = _balanced_batch_helper(stream.sources.index('query'))
+
+        transormer += Mapping(SortMapping(comparison))
+        transormer += Unpack()
+        transormer += Batch(iteration_scheme=ConstantScheme(self.config.batch_size))
+        transormer += MatrixPadding(mask_sources=['query'], mask_dtype=theano.config.floatX)
+        # Sample queries
+        transormer += CountQuerySample(sample_num=self.config.query_sample_num)
+        # Merge queries
+        transormer += QueryMerge(merge_source='query')
+
+        transormer += OutputNoise(output_source=self.config.task_name,
+                                 label2freq=self.config.dataset.label2freq,
+                                 max_noise_prob=getattr(self.config, self.config.task_name + '_max_noise'),
+                                 decay_rate=getattr(self.config, self.config.task_name + '_decay_rate'))
+        return transformer
+
+
+class SogouValidTransformer(SogouMultiTaskTrainTransformer):
+
+    def _build_transformer(self, stream):
+        transformer = Batch(iteration_scheme=ConstantScheme(self.config.batch_size *
+                                                          self.config.sort_batch_count))
+        comparison = _balanced_batch_helper(stream.sources.index('query'))
+        transformer += Mapping(SortMapping(comparison))
+        transformer += Unpack()
+        transformer += Batch(iteration_scheme=ConstantScheme(self.config.batch_size))
+        transformer += MatrixPadding(mask_sources=['query'], mask_dtype=theano.config.floatX)
+        # Merge queries
+        transformer += QueryMerge(merge_source='query')
+        return transformer
+
+
+class SogouPredictTransformer(SogouMultiTaskTrainTransformer):
+
+    def _build_transformer(self, stream):
+        transformer = Batch(iteration_scheme=ConstantScheme(self.config.batch_size))
+        transformer += MatrixPadding(mask_sources=['query'], mask_dtype=theano.config.floatX)
+        # Merge queries
+        transformer += QueryMerge(merge_source='query')
+        return transformer
+
+
+class _balanced_batch_helper(object):
+    def __init__(self, key):
+        self.key = key
+    def __call__(self, data):
+        return len(data[self.key])
 
 
 class TokenSample(Transformer):
-    def __init__(self, data_stream, sample_prob, sample_source='query_mask', **kwargs):
+    def __init__(self, sample_prob, sample_source='query_mask', **kwargs):
         '''For a given sample, sample its feature with probability given by sample_prob
         :param data_stream:
         :param sample_sources: Features on which sampling is applied. Commonly, if mask is applied, sample_sources should be mask names
         :param sample_prob:
         :return:
         '''
-        super(TokenSample, self).__init__(
-            data_stream, produces_examples=False, **kwargs)
+        super(TokenSample, self).__init__(produces_examples=False, **kwargs)
         self.sample_source = sample_source
         self.sample_prob = sample_prob
         self._initialize()
@@ -33,9 +129,8 @@ class TokenSample(Transformer):
 
 
 class TokenSampleByFrequency(Transformer):
-    def __init__(self,  data_stream, sample_source, neg_prob_source, sample_exp = 1., *args, **kwargs):
-        super(TokenSampleByFrequency, self).__init__(
-            data_stream, produces_examples=False, **kwargs)
+    def __init__(self, sample_source, neg_prob_source, sample_exp = 1., *args, **kwargs):
+        super(TokenSampleByFrequency, self).__init__(produces_examples=False, **kwargs)
         self.sample_source = sample_source
         self.neg_prob_source = neg_prob_source
         self.sample_exp = sample_exp
@@ -59,7 +154,7 @@ class TokenSampleByFrequency(Transformer):
 
 
 class QuerySample(Transformer):
-    def __init__(self, data_stream, sample_prob, sample_source='query_mask', seed=1234, *args, **kwargs):
+    def __init__(self, sample_prob, sample_source='query_mask', seed=1234, **kwargs):
         '''For a given user, sample its queries.
 
         :param data_stream: fuel.Datastream
@@ -70,8 +165,7 @@ class QuerySample(Transformer):
         :param seed: int
                 Int seed for np.random. The seed will increment one every time the transform applied.
         '''
-        super(QuerySample, self).__init__(
-            data_stream, produces_examples=False, **kwargs)
+        super(QuerySample, self).__init__(produces_examples=False, **kwargs)
         self.seed = seed
         self.sample_source = sample_source
         self.sample_prob = sample_prob
@@ -94,9 +188,8 @@ class QuerySample(Transformer):
         return tuple(batch_with_samplings)
 
 
-class ConQuerySample(Transformer):
-    def __init__(self, data_stream, sample_num, sample_source_mask='query_mask',
-                 *args, **kwargs):
+class CountQuerySample(Transformer):
+    def __init__(self, sample_num, sample_source_mask='query_mask', **kwargs):
         '''
         For a given user, sample its queries and bag words of sampled queries
         :param data_stream:
@@ -105,8 +198,7 @@ class ConQuerySample(Transformer):
         :param kwargs:
         :return:
         '''
-        super(ConQuerySample, self).__init__(
-            data_stream, produces_examples=False, **kwargs)
+        super(CountQuerySample, self).__init__(produces_examples=False, **kwargs)
         self.sample_source_mask = sample_source_mask
         self.sample_num = sample_num
         self._initialize()
@@ -121,20 +213,20 @@ class ConQuerySample(Transformer):
                 batch_with_samplings.append(source_batch)
                 continue
             query_mask = source_batch
-            full_idxes = numpy.arange(len(query_mask[0]))
+            full_idxes = np.arange(len(query_mask[0]))
             masks = []
             for mask in query_mask:
                 idxes = full_idxes[mask[:, 0] > 0.]
-                numpy.random.shuffle(idxes)
+                np.random.shuffle(idxes)
                 mask[idxes[min(len(idxes), self.sample_num):], :] = 0.
                 masks.append(mask)
-            batch_with_samplings.append(numpy.array(masks, dtype=query_mask.dtype))
+            batch_with_samplings.append(np.array(masks, dtype=query_mask.dtype))
         return tuple(batch_with_samplings)
 
 
 class QueryMerge(Transformer):
     '''Merge queries of a user into bag of words'''
-    def __init__(self, data_stream, merge_source='query', *args, **kwargs):
+    def __init__(self, merge_source='query', *args, **kwargs):
         '''For a given user, sample its queries.
 
         :param data_stream: fuel.Datastream
@@ -145,8 +237,7 @@ class QueryMerge(Transformer):
         :param seed: int
                 Int seed for np.random. The seed will increment one every time the transform applied.
         '''
-        super(QueryMerge, self).__init__(
-            data_stream, produces_examples=False, **kwargs)
+        super(QueryMerge, self).__init__(produces_examples=False, **kwargs)
         self.merge_source = merge_source
         self._initialize()
 
@@ -178,8 +269,56 @@ class QueryMerge(Transformer):
         return tuple(batch_merged)
 
 
+class BaggedQuerySample(Transformer):
+    def __init__(self, sample_source, sample_prob, sample_source_mask = None, **kwargs):
+        '''
+        For a given user, sample its queries and bag words of sampled queries
+        :param data_stream:
+        :param sample_sources: name of query mask
+        :param sample_prob:
+        :param kwargs:
+        :return:
+        '''
+        super(BaggedQuerySample, self).__init__(**kwargs)
+        self.sample_source = sample_source
+        if sample_source_mask is None:
+            sample_source_mask = sample_source + '_mask'
+        self.sample_source_mask = sample_source_mask
+        self.sample_prob = sample_prob
+        self._initialize()
+
+    def _initialize(self):
+        pass
+
+    def transform_batch(self, batch):
+        batch_with_samplings = []
+        new_mask = None
+        for source, source_batch in zip(self.data_stream.sources, batch):
+            if source != self.sample_source:
+                batch_with_samplings.append(source_batch)
+                continue
+            query_mask = batch[self.data_stream.sources.index(self.sample_source_mask)]
+            rvs = np.random.rand(*source_batch.shape[0:2])
+            masks = query_mask * (rvs < self.sample_prob)[:,:,None]
+            queries = []
+            max_len = 0
+            for i in range(len(source_batch)):
+                words = np.unique(source_batch[i][masks[i] > 0.])
+                if len(words) > max_len:
+                    max_len = len(words)
+                queries.append(words)
+            new_batch = np.zeros((len(source_batch), max_len), dtype='int32')
+            new_mask = np.zeros((len(source_batch), max_len), dtype=theano.config.floatX)
+            for i in range(len(source_batch)):
+                new_batch[i][0:len(queries[i])] = queries[i]
+                new_mask[i][0:len(queries[i])] = 1.
+            batch_with_samplings.append(new_batch)
+        batch_with_samplings[self.data_stream.sources.index(self.sample_source_mask)] = new_mask
+        return tuple(batch_with_samplings)
+
+
 class OutputNoise(Transformer):
-    def __init__(self, data_stream, output_source, max_noise_prob, label2freq, decay_rate=1., **kwargs):
+    def __init__(self, output_source, max_noise_prob, label2freq, decay_rate=1., **kwargs):
         '''
         For a given example, sample its feature with probability given by sample_prob
         :param data_stream:
@@ -188,8 +327,7 @@ class OutputNoise(Transformer):
         :param kwargs:
         :return:
         '''
-        super(OutputNoise, self).__init__(
-            data_stream, produces_examples=False, **kwargs)
+        super(OutputNoise, self).__init__(produces_examples=False, **kwargs)
         self.output_source = output_source
         self.max_noise_prob = max_noise_prob
         self.label2freq = label2freq
@@ -260,8 +398,8 @@ class MatrixPadding(Padding):
     masked, a new source will be added. This source will have the name of
     the original source with the suffix ``_mask`` (e.g. ``features_mask``).
 
-    Element of incoming batches will be treated as a list or np type of matrix.
-    Element of a matrix is a list or np array.
+    Element of incoming batches will be treated as a list or numpy type of matrix.
+    Element of a matrix is a list or numpy array.
 
     Parameters
     ----------
@@ -305,3 +443,7 @@ class MatrixPadding(Padding):
         cols = [len(item) for item in matrix]
         max_col = max(cols)
         return (row, max_col)
+
+
+if __name__ == '__main__':
+    transformer = SogouTrainTransformer(None)

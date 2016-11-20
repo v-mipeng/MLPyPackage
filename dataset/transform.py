@@ -93,12 +93,12 @@ class Transformer(AbstractDataStream):
         of examples).
 
     """
-    def __init__(self, name=None, data_stream=None, produces_examples=None, **kwargs):
+    def __init__(self, name=None, produces_examples=None, **kwargs):
         super(Transformer, self).__init__(**kwargs)
-        self.data_stream = data_stream
         if name is None:
             name = self.__class__
         self.name = name
+        self._data_stream = None
         self.produces_examples = produces_examples
         self.former_transformer = None
 
@@ -109,23 +109,6 @@ class Transformer(AbstractDataStream):
     @data_stream.setter
     def data_stream(self, value):
         self._data_stream = value
-
-    @property
-    def axis_labels(self):
-        if hasattr(self, '_axis_labels'):
-            if self._axis_labels is None:
-                if self.data_stream.axis_labels:
-                    return self.data_stream.axis_labels.copy()
-                else:
-                    return None
-            else:
-                return self._axis_labels
-        else:
-            return None
-
-    @axis_labels.setter
-    def axis_labels(self, value):
-        self._axis_labels = value
 
     @property
     def produces_examples(self):
@@ -149,8 +132,9 @@ class Transformer(AbstractDataStream):
         if self.former_transformer is None:
             self.data_stream = data_stream
         else:
-            self.data_stream = self.former_transformer
             self.former_transformer.apply(data_stream)
+            self.data_stream = self.former_transformer
+        return self
 
     def remove(self, remove_which):
         '''Remove sub-transformer from piped transformers
@@ -272,6 +256,17 @@ class AgnosticTransformer(Transformer):
     and batch implementation of a transformation are the same.
 
     """
+    def __init__(self, *args, **kwargs):
+        super(AgnosticTransformer, self).__init__(*args, **kwargs)
+
+    @property
+    def data_stream(self):
+        return self._data_stream
+
+    @data_stream.setter
+    def data_stream(self, value):
+        self._data_stream = value
+
     @abstractmethod
     def transform_any(self, data):
         """Transforms the input, which can either be an example or a batch."""
@@ -335,10 +330,17 @@ class SourcewiseTransformer(Transformer):
         which case the mapping is applied to all sources.
 
     """
-    def __init__(self, which_sources=None,
-                 **kwargs):
+    def __init__(self, which_sources=None, **kwargs):
         super(SourcewiseTransformer, self).__init__(**kwargs)
         self.which_sources = which_sources
+
+    @property
+    def data_stream(self):
+        return self._data_stream
+
+    @data_stream.setter
+    def data_stream(self, value):
+        self._data_stream = value
 
     @property
     def which_sources(self):
@@ -408,6 +410,9 @@ class AgnosticSourcewiseTransformer(AgnosticTransformer,
     the same.
 
     """
+    def __init__(self, *args, **kwargs):
+        super(AgnosticSourcewiseTransformer, self).__init__(*args, **kwargs)
+
     def transform_any(self, data):
         return self._apply_sourcewise_transformation(
             data=data, method=self.transform_any_source)
@@ -441,17 +446,19 @@ class Flatten(SourcewiseTransformer):
     def __init__(self, **kwargs):
         # Modify the axis_labels dict to reflect the fact that all non-batch
         # axes will be grouped together under the same 'feature' axis.
+        kwargs.setdefault('name', 'Flatten')
         super(Flatten, self).__init__(**kwargs)
 
     @property
-    def axis_labels(self):
-        if self._axis_labels is None:
-            if self.data_stream.axis_labels:
-                return self._infer_axis_labels(self.data_stream, self.which_sources)
-            else:
-                return None
-        else:
-            return self._axis_labels
+    def data_stream(self):
+        return super(Flatten, self).data_stream
+
+    @data_stream.setter
+    def data_stream(self, value):
+        self._data_stream = value
+        if self.axis_labels is None:
+            if self._data_stream.axis_labels:
+                self.axis_labels = self._infer_axis_labels(self._data_stream, self.which_sources)
 
     def _infer_axis_labels(self, data_stream, which_sources):
         axis_labels = {}
@@ -489,6 +496,7 @@ class ScaleAndShift(AgnosticSourcewiseTransformer):
 
     """
     def __init__(self, scale, shift, **kwargs):
+        kwargs.setdefault('name', 'ScaleAndShift')
         super(ScaleAndShift, self).__init__(**kwargs)
         self.scale = scale
         self.shift = shift
@@ -511,6 +519,7 @@ class Cast(AgnosticSourcewiseTransformer):
 
     """
     def __init__(self, dtype, **kwargs):
+        kwargs.setdefault('name', 'Cast')
         if dtype == 'floatX':
             dtype = config.floatX
         self.dtype = dtype
@@ -523,6 +532,7 @@ class Cast(AgnosticSourcewiseTransformer):
 class ForceFloatX(AgnosticSourcewiseTransformer):
     """Force all floating point numpy arrays to be floatX."""
     def __init__(self, **kwargs):
+        kwargs.setdefault('name', 'ForceFloatX')
         super(ForceFloatX, self).__init__(**kwargs)
 
     def transform_any_source(self, source_data, _):
@@ -546,6 +556,7 @@ class Filter(Transformer):
 
     """
     def __init__(self, predicate, **kwargs):
+        kwargs.setdefault('name', 'Filter')
         super(Filter, self).__init__(**kwargs)
         self.predicate = predicate
 
@@ -582,6 +593,7 @@ class Cache(Transformer):
         # Note: produces_examples will always be False because of this
         # restriction: the only iteration schemes allowed are BatchSizeScheme,
         # which produce batches.
+        kwargs.setdefault('name', 'Cache')
         if not isinstance(iteration_scheme, BatchSizeScheme):
             raise ValueError('iteration scheme must be an instance of '
                              'BatchSizeScheme')
@@ -667,23 +679,29 @@ class Batch(Transformer):
         # The value for `produces_examples` is inferred from the iteration
         # scheme's `requests_examples` attribute. We expect the scheme to
         # request batches.
+        kwargs.setdefault('name', 'Batch')
         if iteration_scheme.requests_examples:
             raise ValueError('the iteration scheme must request batches, '
                              'not individual examples.')
-        super(Batch, self).__init__(iteration_scheme=iteration_scheme, **kwargs)
+        super(Batch, self).__init__(iteration_scheme=iteration_scheme,
+                                    produces_examples=False,
+                                    **kwargs)
         self.strictness = strictness
 
     @property
-    def axis_labels(self):
-        if hasattr(self, '_axis_labels'):
-            if self.axis_labels is None:
-                if self.data_stream.axis_labels:
-                    return dict((source, ('batch',) + labels if labels else None) for
-                             source, labels in iteritems(self.data_stream.axis_labels))
-            else:
-                return self.axis_labels
-        else:
-            return None
+    def data_stream(self):
+        return super(Batch, self).data_stream
+
+    @data_stream.setter
+    def data_stream(self, value):
+        self._data_stream = value
+        if not self._data_stream.produces_examples:
+            raise ValueError('the wrapped data stream must produce examples, '
+                             'not batches of examples.')
+        if self.axis_labels is None:
+            if self._data_stream.axis_labels:
+                self.axis_labels = dict((source, ('batch',) + labels if labels else None) for
+                                        source, labels in iteritems(self._data_stream.axis_labels))
 
     def get_data(self, request=None):
         """Get data from the dataset."""
@@ -718,19 +736,26 @@ class Unpack(Transformer):
         The data stream to unpack
 
     """
-    def __init__(self, data_stream, **kwargs):
-        if data_stream.produces_examples:
-            raise ValueError('the wrapped data stream must produce batches of '
-                             'examples, not examples')
-        if data_stream.axis_labels:
-            kwargs.setdefault(
-                'axis_labels',
-                dict((source, labels[1:] if labels else None) for
-                     source, labels in iteritems(data_stream.axis_labels)))
-        super(Unpack, self).__init__(
-            data_stream, produces_examples=True, **kwargs)
+    def __init__(self, **kwargs):
+        kwargs.setdefault('name', 'Unpack')
+        super(Unpack, self).__init__(produces_examples=True, **kwargs)
         self.data = None
 
+    @property
+    def data_stream(self):
+        return super(Unpack, self).data_stream
+
+    @data_stream.setter
+    def data_stream(self, value):
+        self._data_stream = value
+        if self._data_stream.produces_examples:
+            raise ValueError('the wrapped data stream must produce batches of '
+                             'examples, not examples')
+        if self.axis_labels is None:
+            if self._data_stream.axis_labels:
+                self.axis_labels = dict((source, labels[1:] if labels else None) for
+                                        source, labels in iteritems(self._data_stream.axis_labels))
+        
     def get_data(self, request=None):
         if request is not None:
             raise ValueError
@@ -769,13 +794,10 @@ class Padding(Transformer):
         be used.
 
     """
-    def __init__(self, data_stream, mask_sources=None, mask_dtype=None,
+    def __init__(self, mask_sources=None, mask_dtype=None,
                  **kwargs):
-        if data_stream.produces_examples:
-            raise ValueError('the wrapped data stream must produce batches of '
-                             'examples, not examples')
-        super(Padding, self).__init__(
-            data_stream, produces_examples=False, **kwargs)
+        kwargs.setdefault('name', 'Padding')
+        super(Padding, self).__init__(produces_examples=False, **kwargs)
         if mask_sources is None:
             mask_sources = self.data_stream.sources
         self.mask_sources = mask_sources
@@ -783,6 +805,17 @@ class Padding(Transformer):
             self.mask_dtype = config.floatX
         else:
             self.mask_dtype = mask_dtype
+
+    @property
+    def data_stream(self):
+        return super(Padding, self).data_stream
+
+    @data_stream.setter
+    def data_stream(self, value):
+        self._data_stream = value
+        if self._data_stream.produces_examples:
+            raise ValueError('the wrapped data stream must produce batches of '
+                             'examples, not examples')
 
     @property
     def sources(self):
@@ -891,82 +924,6 @@ class Merge(AbstractDataStream):
         return tuple(result)
 
 
-class BackgroundProcess(object):
-    """A background process that reads batches and stores them in a queue.
-
-    The :meth:`main` method needs to be called in order to start reading
-    batches into the queue. Note that this process will run infinitely;
-    start it as a :attr:`~multiprocessing.Process.daemon` to make sure it
-    will get killed when the main process exits.
-
-    Parameters
-    ----------
-    data_stream : :class:`.DataStream` or :class:`Transformer`
-        The data stream from which to read batches.
-    max_batches : int
-        The maximum number of batches to store in the queue. If reached,
-        the process wil block until a batch is popped from the queue.
-
-    """
-    def __init__(self, data_stream, max_batches):
-        self.data_stream = data_stream
-        self.batches = Queue(max_batches)
-        self.run_background = True
-
-    def main(self):
-        while True:
-            iterator = self.data_stream.get_epoch_iterator()
-            for batch in iterator:
-                self.batches.put(batch)
-            self.batches.put(StopIteration)
-
-    def get_next_data(self):
-        return self.batches.get()
-
-
-class MultiProcessing(Transformer):
-    """Cache batches from the stream in a separate process.
-
-    To speed up training of your model, it can be worthwhile to load and
-    process data in separate process. This is a simple implementation of
-    such an approach that makes use of Python's :mod:`multiprocessing`
-    module.
-
-    Parameters
-    ----------
-    data_stream : :class:`DataStream` or :class:`Transformer`
-        The data stream to read batches from in the separate process.
-    max_store : int, optional
-        The maximum number of batches to keep in the queue.
-
-    Notes
-    -----
-    This approach incurs an overhead from the need to serialize batches in
-    order to send them to the main process. This should be acceptable if
-    your model's training calls take significantly longer than reading a
-    batch of data does, but for fast models or slow data pipelines a more
-    robust approach might need to be considered.
-
-    """
-    def __init__(self, data_stream, max_store=100, **kwargs):
-        if data_stream.axis_labels:
-            kwargs.setdefault('axis_labels', data_stream.axis_labels.copy())
-        super(MultiProcessing, self).__init__(
-            data_stream, data_stream.produces_examples, **kwargs)
-        self.background = BackgroundProcess(data_stream, max_store)
-        self.proc = Process(target=self.background.main)
-        self.proc.daemon = True
-        self.proc.start()
-
-    def get_data(self, request=None):
-        if request is not None:
-            raise ValueError
-        data = self.background.get_next_data()
-        if data == StopIteration:
-            raise StopIteration
-        return data
-
-
 class Rename(AgnosticTransformer):
     """Renames the sources of the stream.
 
@@ -983,7 +940,8 @@ class Rename(AgnosticTransformer):
         description of possible values. Default is 'raise'.
 
     """
-    def __init__(self, data_stream, names, on_non_existent='raise', **kwargs):
+    def __init__(self, names, on_non_existent='raise', **kwargs):
+        kwargs.setdefault('name', 'Rename')
         if on_non_existent not in ('raise', 'ignore', 'warn'):
             raise ValueError("on_non_existent must be one of 'raise', "
                              "'ignore', 'warn'")
@@ -992,15 +950,27 @@ class Rename(AgnosticTransformer):
         # must be unique. This lets you use one piece of code including
         # a Rename transformer to map disparately named sources in
         # different datasets to a common name.
-        usable_names = {k: v for k, v in iteritems(names)
-                        if k in data_stream.sources}
+        self.names = names
+        self.on_non_existent = on_non_existent
+        super(Rename, self).__init__(**kwargs)
+
+    @property
+    def data_stream(self):
+        return super(Rename, self).data_stream
+
+    @data_stream.setter
+    def data_stream(self, value):
+        self._data_stream = value
+        usable_names = {k: v for k, v in iteritems(self.names)
+                        if k in self._data_stream.sources}
+
         if len(set(usable_names.values())) != len(usable_names):
             raise KeyError("multiple old source names cannot map to "
                            "the same new source name")
-        sources = list(data_stream.sources)
+        sources = list(self._data_stream.sources)
         sources_lookup = {n: i for i, n in enumerate(sources)}
-        for old, new in iteritems(names):
-            if new in sources_lookup and new not in names:
+        for old, new in iteritems(self.names):
+            if new in sources_lookup and new not in self.names:
                 if old in usable_names:
                     message = ("Renaming source '{}' to '{}' "
                                "would create two sources named '{}'"
@@ -1010,23 +980,19 @@ class Rename(AgnosticTransformer):
                 message = ("Renaming source '{}' to '{}': "
                            "stream does not provide a source '{}'"
                            .format(old, new, old))
-                if on_non_existent == 'raise':
+                if self.on_non_existent == 'raise':
                     raise KeyError(message)
                 else:
                     log_level = {'warn': logging.WARNING,
                                  'ignore': logging.DEBUG}
-                    log.log(log_level[on_non_existent], message)
+                    log.log(log_level[self.on_non_existent], message)
             else:
                 sources[sources_lookup[old]] = new
         self.sources = tuple(sources)
-        if data_stream.axis_labels:
-            kwargs.setdefault(
-                'axis_labels',
-                dict((names[source] if source in names else source, labels)
-                     for (source, labels) in
-                     iteritems(data_stream.axis_labels)))
-        super(Rename, self).__init__(
-            data_stream, data_stream.produces_examples, **kwargs)
+        if self.axis_labels is None:
+            if self._data_stream.axis_labels:
+                self.axis_labels = dict((source, ('batch',) + labels if labels else None) for
+                                        source, labels in iteritems(self._data_stream.axis_labels))
 
     def transform_any(self, data):
         return data
@@ -1047,21 +1013,339 @@ class FilterSources(AgnosticTransformer):
         Must be a subset of the sources given by the stream.
 
     """
-    def __init__(self, data_stream, sources, **kwargs):
-        if any(source not in data_stream.sources for source in sources):
+    def __init__(self, sources, **kwargs):
+        kwargs.setdefault('name', 'FilterSources')
+        super(FilterSources, self).__init__(**kwargs)
+        # keep order of data_stream.sources
+        self.reserved_sources = sources
+
+    @property
+    def data_stream(self):
+        return super(FilterSources, self).data_stream
+
+    @data_stream.setter
+    def data_stream(self, value):
+        self._data_stream = value
+        if any(source not in self._data_stream.sources for source in self.reserved_sources):
             raise ValueError("sources must all be contained in "
                              "data_stream.sources")
-        if data_stream.axis_labels:
-            kwargs.setdefault('axis_labels',
-                              dict((source, labels) for (source, labels)
-                                   in iteritems(data_stream.axis_labels)
-                                   if source in sources))
-        super(FilterSources, self).__init__(
-            data_stream, data_stream.produces_examples, **kwargs)
-
-        # keep order of data_stream.sources
-        self.sources = tuple(s for s in data_stream.sources if s in sources)
+        self.sources = tuple(s for s in self._data_stream.sources if s in self.reserved_sources)
+        if self.axis_labels is None:
+            if self._data_stream.axis_labels:
+                self.axis_labels = dict((source, ('batch',) + labels if labels else None) for
+                                        source, labels in iteritems(self._data_stream.axis_labels))
 
     def transform_any(self, data):
         return [d for d, s in izip(data, self.data_stream.sources)
                 if s in self.sources]
+
+
+# TODO: Test these transformers and add doc string
+
+class OutputNoise(Transformer):
+    '''Add noise to output'''
+    def __init__(self, output_source, max_noise_prob, label2freq, decay_rate=1., **kwargs):
+        '''
+        For a given example, sample its feature with probability given by sample_prob
+        :param data_stream:
+        :param sample_sources: Features on which sampling is applied. Commonly, if mask is applied, sample_sources should be mask names
+        :param sample_prob:
+        :param kwargs:
+        :return:
+        '''
+        super(OutputNoise, self).__init__(**kwargs)
+        self.output_source = output_source
+        self.max_noise_prob = max_noise_prob
+        self.label2freq = label2freq
+        self.decay_rate = decay_rate
+        self._initialize()
+
+    def _initialize(self):
+        noise_probs = []
+        for i in range(len(self.label2freq)):
+            noise_probs.append(self.label2freq.get(i, 0))
+        noise_probs = numpy.array(noise_probs, dtype=theano.config.floatX)
+        label_nums = noise_probs.copy()
+        noise_probs /= noise_probs.max()
+        self.noise_probs = noise_probs * self.max_noise_prob
+
+        idxes = numpy.arange(len(self.label2freq))
+        self.cum_lable_nums = []
+        for label in range(len(self.label2freq)):
+            label_num = label_nums.copy()
+            label_num[label] = 0.
+            label_num /= numpy.exp(self.decay_rate * numpy.abs(idxes - label))
+            label_num /= label_num.sum()
+            label_num *= self.noise_probs[label]
+            self.cum_lable_nums.append(label_num.cumsum())
+
+    @property
+    def sources(self):
+        sources = []
+        for source in self.data_stream.sources:
+            sources.append(source)
+            if source == self.output_source:
+                sources.append(source + '_noised_label')
+            else:
+                pass
+        return tuple(sources)
+
+    def transform_batch(self, batch):
+        batch_with_noise = []
+        for source, source_batch in zip(self.data_stream.sources, batch):
+            batch_with_noise.append(source_batch)
+            if source != self.output_source:
+                continue
+
+            noised_batch = []
+            rvs = numpy.random.rand(*source_batch.shape)
+            for rv, label in zip(rvs, source_batch):
+                noised_label = numpy.zeros(len(self.label2freq))
+                if rv < self.noise_probs[label]:
+                    for i in range(len(self.cum_lable_nums[label])):
+                        if rv < self.cum_lable_nums[label][i]:
+                            noised_label[i] = self.noise_probs[label]
+                            noised_label[label] = 1.-self.noise_probs[label]
+                            noised_batch.append(noised_label)
+                            break
+                else:
+                    noised_label[label] = 1.
+                    noised_batch.append(noised_label)
+            batch_with_noise.append(numpy.array(noised_batch, dtype=theano.config.floatX))
+        return tuple(batch_with_noise)
+
+
+class MatrixPadding(Padding):
+    """Adds padding to variable-size matrixes.
+
+    When your batches consist of variable-size matrixes, use this class
+    to equalize sizes by adding zero-padding. To distinguish between
+    data and padding masks can be produced. For each data source that is
+    masked, a new source will be added. This source will have the name of
+    the original source with the suffix ``_mask`` (e.g. ``features_mask``).
+
+    Element of incoming batches will be treated as a list or numpy type of matrix.
+    Element of a matrix is a list or numpy array.
+
+    Parameters
+    ----------
+    data_stream : :class:`AbstractDataStream` instance
+        The data stream to wrap
+    mask_sources : tuple of strings, optional
+        The sources for which we need to add a mask. If not provided, a
+        mask will be created for all data sources
+    mask_dtype: str, optional
+        data type of masks. If not provided, floatX from config will
+        be used.
+
+    """
+
+    def transform_batch(self, batch):
+        batch_with_masks = []
+        for i, (source, source_batch) in enumerate(
+                zip(self.data_stream.sources, batch)):
+            if source not in self.mask_sources:
+                batch_with_masks.append(source_batch)
+                continue
+
+            shapes = [self._get_matrix_shape(sample) for sample in source_batch]
+            rows, cols = zip(*shapes)
+            max_rows = max(rows)
+            max_cols = max(cols)
+            dtype = numpy.asarray(source_batch[0][0]).dtype
+
+            padded_batch = numpy.zeros((len(source_batch), max_rows, max_cols), dtype=dtype)
+            mask = numpy.zeros((len(source_batch), max_rows, max_cols), dtype=self.mask_dtype)
+            for i, sample in enumerate(source_batch):
+                for j, row in enumerate(sample):
+                    padded_batch[i, j, :len(row)] = numpy.asarray(row)
+                    mask[i, j, :len(row)] = 1
+            batch_with_masks.append(padded_batch)
+            batch_with_masks.append(mask)
+        return tuple(batch_with_masks)
+
+    def _get_matrix_shape(self, matrix):
+        row = len(matrix)
+        cols = [len(item) for item in matrix]
+        max_col = max(cols)
+        return (row, max_col)
+
+
+class FeatureSample(Transformer):
+    def __init__(self, sample_source, sample_prob, sample_exp=1., *args, **kwargs):
+        '''
+        For a given example, sample its feature with probability given by sample_prob
+        :param data_stream:
+        :param sample_sources: Features on which sampling is applied. Commonly, if mask is applied, sample_sources should be mask names
+        :param sample_prob:
+        :param kwargs:
+        :return:
+        '''
+        super(FeatureSample, self).__init__(**kwargs)
+        self.sample_source = sample_source
+        self.sample_prob = sample_prob
+        self.sample_exp = sample_exp
+        self._initialize()
+
+    def _initialize(self):
+        lens = []
+        for batch in self.data_stream.get_epoch_iterator(as_dict=True):
+            lens += batch[self.sample_source].sum(axis=1).tolist()
+        lens = numpy.array(lens)
+        self.ave_len = lens.mean()
+
+    def transform_batch(self, batch):
+        batch_with_samplings = []
+        for source, source_batch in zip(self.data_stream.sources, batch):
+            if source != self.sample_source:
+                batch_with_samplings.append(source_batch)
+                continue
+            rvs = numpy.random.rand(*source_batch.shape)
+            source_batch[rvs > self.sample_prob] *= 0.
+            batch_with_samplings.append(source_batch)
+        return tuple(batch_with_samplings)
+
+
+class NegativeSample(Transformer):
+
+    def __init__(self, dist_tables, sample_sources, sample_sizes, **kwargs):
+        # produces_examples = False: invoke transform_batch() otherwise transform_example()
+        super(NegativeSample, self).__init__(produces_examples=False, **kwargs)
+        self.dist_tables = dist_tables
+        self.sample_sources = sample_sources
+        self.sample_sizes = sample_sizes
+        self._check_dist_table()
+
+    def _check_dist_table(self):
+        for i in range(len(self.dist_tables)):
+            _,count = self.dist_tables[i]
+            if not isinstance(count, numpy.ndarray):
+                count = numpy.array(count)
+            if sum(count == count.sum()) > 0:
+                raise ValueError('Cannot apply negtive sampling for the probability of one element is 1.0')
+
+    @property
+    def sources(self):
+        sources = []
+        for source in self.data_stream.sources:
+            sources.append(source)
+            if source in self.sample_sources:
+                sources.append(source + '_negtive_sample')
+        return tuple(sources)
+
+    def transform_batch(self, batch):
+        batch_with_samplings = []
+        i = 0
+        for source, source_batch in zip(self.data_stream.sources, batch):
+            if source not in self.sample_sources:
+                batch_with_samplings.append(source_batch)
+                continue
+
+            neg_samples = []
+            for source_example in source_batch:
+                neg_sample = []
+                while len(neg_sample) < self.sample_sizes[i]:
+                    ids = self.sample_id(self.dist_tables[i], self.sample_sizes[i])
+                    for id in ids:
+                        if len(numpy.where(source_example == id)[0]) == 0:
+                            neg_sample.append(id)
+                            if len(neg_sample) == self.sample_sizes[i]:
+                                break
+                neg_samples.append(neg_sample)
+            neg_samples = numpy.array(neg_samples, dtype= source_batch.dtype)
+            batch_with_samplings.append(source_batch)
+            batch_with_samplings.append(neg_samples)
+            i += 1
+        return tuple(batch_with_samplings)
+
+    def sample_id(self, num_by_id, sample_size = 1):
+        # bisect search
+        def bisect_search(sorted_na, value):
+            '''
+            Do bisect search
+            :param sorted_na: cumulated sum array
+            :param value: random value
+            :return: the index that sorted_na[index-1]<=value<sorted_na[index] with defining sorted_na[-1] = -1
+            '''
+            if len(sorted_na) == 1:
+                return 0
+            left_index = 0
+            right_index = len(sorted_na)-1
+
+            while right_index-left_index > 1:
+                mid_index = (left_index + right_index) / 2
+                # in right part
+                if value > sorted_na[mid_index]:
+                    left_index = mid_index
+                elif value < sorted_na[mid_index]:
+                    right_index = mid_index
+                else:
+                    return min(mid_index+1,right_index)
+            return right_index
+        id, num = num_by_id
+        cum_num = num.cumsum()
+        rvs = numpy.random.uniform(low = 0.0, high = cum_num[-1], size=(sample_size,))
+        ids = []
+        for rv in rvs:
+            if len(id) < 20000: # This value is obtained by test
+                index = numpy.argmin(numpy.abs(cum_num-rv))
+                if rv >= cum_num[index]:
+                    index += 1
+                else:
+                    pass
+            else:
+                index = bisect_search(cum_num, rv)
+            ids.append(id[index])
+        return ids
+
+
+class SparseIndex(Transformer):
+    def __init__(self, data_stream, sparse_pairs, **kwargs):
+        # produces_examples = False: invoke transform_batch() otherwise transform_example()
+        super(SparseIndex, self).__init__(
+            data_stream, produces_examples=False, **kwargs)
+        self.sparse_sources, self.sparse_idxes = zip(*sparse_pairs)
+
+    @property
+    def sources(self):
+        sources = []
+        for source in self.data_stream.sources:
+            sources.append(source)
+            if source in self.sparse_sources:
+                sources.append(source+"_sparse_mask")
+            if source in self.sparse_idxes:
+                sources.append(source + '_left_idx')
+                sources.append(source + '_right_idx')
+        return tuple(sources)
+
+    def transform_batch(self, batch):
+        import theano
+        new_batch = []
+        for source, source_batch in zip(self.data_stream.sources, batch):
+            if source in self.sparse_sources:
+                # turn list of ndarray to one ndarray
+                tmp = numpy.concatenate(source_batch, axis=0)
+                if len(tmp) > 0:
+                    mask = numpy.ones(len(tmp), dtype=theano.config.floatX)
+                else:
+                    tmp = numpy.array([0], dtype='int32')
+                    mask = numpy.zeros(1, dtype=theano.config.floatX)
+                new_batch.append(tmp)
+                new_batch.append(mask)
+            elif source in self.sparse_idxes:
+                new_batch.append(source_batch)
+                i = 0
+                left_idxes = []
+                right_idxes = []
+                for idxes in source_batch:
+                    left_idxes += [i]*len(idxes)
+                    right_idxes += idxes.tolist()
+                    i += 1
+                if len(left_idxes) == 0:
+                    left_idxes=[0]
+                    right_idxes=[0]
+                new_batch.append(numpy.array(left_idxes, dtype=source_batch[0].dtype))
+                new_batch.append(numpy.array(right_idxes, dtype=source_batch[0].dtype))
+            else:
+                new_batch.append(source_batch)
+        return tuple(new_batch)

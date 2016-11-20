@@ -182,6 +182,7 @@ class Vectorizer(object):
                 if word not in self.word2index:
                     self.word2index[word] = len(self.word2index)
 
+
 #region Sample code
 
 train_docs = []

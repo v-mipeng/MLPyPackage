@@ -29,8 +29,8 @@ class AbstractDatasetReaderWriter(object):
         '''
         raise NotImplementedError
 
-    def save_dataset(self, dataset, save_to=None):
-        '''Save dataset into file
+    def write_dataset(self, dataset, save_to=None):
+        '''Save preprocessed dataset into file
 
         :param dataset: pml.dataset.base.DatasetContainer
         '''

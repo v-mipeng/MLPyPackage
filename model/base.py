@@ -16,14 +16,14 @@ class AbstractModel(object):
                 The dataset providing training, validation and testing streams
         '''
         if name is None:
-            name = ''
+            name = self.__class__
         self.name = name
-        self._built = False
+        self._initialized = False
         self._consider_constant = []
 
     @property
-    def built(self):
-        if self._built:
+    def initialized(self):
+        if self._initialized:
             return True
         else:
             return False
@@ -32,7 +32,7 @@ class AbstractModel(object):
         self._define_inputs()
         self._build_bricks()
         self._get_cost()
-        self._built = True
+        self._initialized = True
 
     @property
     def train_cg_generator(self):

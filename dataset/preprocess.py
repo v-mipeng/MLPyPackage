@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 import cPickle
 
-import jieba
 import numpy as np
 
 
@@ -17,7 +16,7 @@ class AbstractPreprocessor(object):
     usually used for memory saving.
 
     Define specific processing:
-        Implement process() method to do user specific processing. You are recommended to access data
+        Implement _process() method to do user specific processing. You are recommended to access data
         fields by names. And you should note that the processing is pipelined, current processor is
         applied on the result of former processors.
 
@@ -25,7 +24,7 @@ class AbstractPreprocessor(object):
         Invoke apply() method on instance of pml.dataset.base.DatasetContainer, this will return the processed
         raw dataset with fields added or update.
     '''
-    def __init__(self, config=None, preprocessor=None):
+    def __init__(self, name=None, preprocessor=None):
         '''Pre-processor for raw dataset
 
         The pre-processing maybe some common operation on raw dataset like tokenization for
@@ -36,19 +35,10 @@ class AbstractPreprocessor(object):
         :param allow_replace: bool
 
         '''
+        if name is None:
+            name = self.__class__
+        self.name = name
         self.preprocessor = preprocessor
-        self.config = config
-
-    @property
-    def config(self):
-        if self._config is not None:
-            return self._config.copy()
-        else:
-            return None
-
-    @config.setter
-    def config(self, value):
-        self._config = value
 
     def __add__(self, other):
         if not isinstance(other, AbstractPreprocessor):
@@ -106,9 +96,9 @@ class AbstractPreprocessor(object):
             self._check_name_conflict(raw_dataset.sources)
         if self.preprocessor is not None:
             raw_dataset = self.preprocessor.apply(raw_dataset, *args, **kwargs)
-        return self.process(raw_dataset, *args, **kwargs)
+        return self._process(raw_dataset)
 
-    def process(self, raw_dataset):
+    def _process(self, raw_dataset):
         '''Do dataset pre-process
 
         :return: instance of pml.dataset.base.DatasetContainer
@@ -154,7 +144,7 @@ class ChineseTokenizer(SinglePreprocessor):
             raise ValueError('Name conflict! The name {0} for tokenized text has been used!'
                              .format(self.result_source_name))
 
-    def process(self, raw_dataset):
+    def _process(self, raw_dataset):
         '''Tokenize chinese text into tokens with jieba in accurate mode with HMM
 
         Refer 'https://github.com/fxsjy/jieba' for more detail information about jieba
@@ -163,6 +153,7 @@ class ChineseTokenizer(SinglePreprocessor):
         :return: list
                 A new list with text in text filed being replaced by tokenized text.
         '''
+        import jieba
         texts = raw_dataset[self.source_name]
         tokenized_texts = []
         for text in texts:
@@ -183,7 +174,7 @@ class ChineseCharacterizer(SinglePreprocessor):
             raise ValueError('Name conflict! The name {0} for characterized text has been used!'
                              .format(self.result_source_name))
 
-    def process(self, raw_dataset):
+    def _process(self, raw_dataset):
         '''Split chinese text into list of characters
 
 
@@ -279,7 +270,7 @@ class SparseTokenFilter(SinglePreprocessor):
         else:
             return None
 
-    def process(self, raw_dataset):
+    def _process(self, raw_dataset):
         texts = raw_dataset[self.source_name]
         # Generate token2freq information
         if self._token2freq is None:
@@ -387,7 +378,7 @@ class KeywordFilter(SinglePreprocessor):
         else:
             raise ValueError('Keywords should be stored in a list, tuple or set!')
 
-    def process(self, raw_dataset):
+    def _process(self, raw_dataset):
         texts = raw_dataset[self.source_name]
         # Filter out none keyword tokens
         filtered_texts = []
@@ -421,7 +412,7 @@ class KeywordFilter(SinglePreprocessor):
             self._keywords = cPickle.load(reader)
 
 
-def test_preprocess():
+def test_pre_process():
     from pml.dataset.base import DatasetContainer
     raw_dataset = DatasetContainer({'doc': np.array(['我在中国good', 'American是个非常好的place我很666',
                                                '中国是个很有意思的地方', '我来自中国', '我在读书', 'hahaha']),
@@ -440,4 +431,4 @@ def test_preprocess():
 
 if __name__ == '__main__':
 
-    test_preprocess()
+    test_pre_process()

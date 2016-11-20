@@ -1,15 +1,10 @@
 """Some of the simplest individual bricks."""
 import logging
+
 import numpy as np
-
 from theano import tensor
-
-
 from blocks.bricks.base import application, Brick, lazy
 from blocks.bricks.interfaces import Activation, Feedforward, Initializable
-from blocks.bricks.interfaces import Random
-
-from blocks.bricks.wrappers import WithExtraDims
 from blocks.roles import add_role, WEIGHT, BIAS
 from blocks.utils import shared_floatx_nans
 from blocks.initialization import *

@@ -9,35 +9,59 @@ logger = logging.getLogger('model.extensions.saveload')
 
 class AbstractModelSaverLoader(object):
     '''Save and load model parameters'''
-    def __init__(self, load_from, save_to):
+    def __init__(self, model=None, load_from=None, save_to=None):
+        self.model = model
         self.load_from = load_from
         self.save_to = save_to
 
-    def save_model(self, save_to=None):
+    @property
+    def model(self):
+        return self._model
+
+    @model.setter
+    def model(self, value):
+        self._model = value
+
+    def save_model(self, model=None, save_to=None):
+        '''Save model parameters to file
+
+        :param model: pml.blocks.graph.model.Model
+                Computing graph of model
+        '''
         raise NotImplementedError
 
-    def load_model(self, load_from=None):
+    def load_model(self, model=None, load_from=None):
+        '''Load model parameters from file
+
+        :param model: pml.blocks.graph.model.Model
+                Computing graph of model
+        :param load_from: str
+                Model file path
+        :return:
+        '''
         raise NotImplementedError
 
 
 class FullModelSaverLoader(AbstractModelSaverLoader):
-    def __init__(self, model, **kwargs):
+    def __init__(self, **kwargs):
         '''
         :param model: blocks.model.Model
         '''
         super(FullModelSaverLoader, self).__init__(**kwargs)
-        self.model = model
 
-    def save_model(self, save_to=None):
+    def save_model(self, model=None, save_to=None):
+        if model is None:
+            model = self.model
         if save_to is None:
             save_to = self.save_to
         if not os.path.exists(os.path.dirname(save_to)):
             os.makedirs(os.path.dirname(save_to))
         with open(save_to, 'wb+') as f:
-            logger.info('Saving parameters to %s...' % save_to)
-            cPickle.dump(self.model.get_parameter_values(), f) # Get step rule parameters to continue training processing
+            print('Saving parameters to %s...' % save_to)
+            cPickle.dump(model.get_parameter_values(), f)
+            print('Done!')
 
-    def load_model(self, load_from=None):
+    def load_model(self, model=None, load_from=None):
         '''Load model from disk and initialize the parameters of current model
 
         Only model parameters are loaded but not those built by step rule, so you are not recommended to
@@ -45,6 +69,8 @@ class FullModelSaverLoader(AbstractModelSaverLoader):
         Besides, loaded model parameters and those of given model loaded should completely match both in
         name and value shape
         '''
+        if model is None:
+            model = self.model
         if load_from is None:
             load_from = self.load_from
         logger.info('Load model parameters from {0}'.format(load_from))
@@ -53,26 +79,26 @@ class FullModelSaverLoader(AbstractModelSaverLoader):
         else:
             model_params = cPickle.load(open(load_from, 'rb'))
             # Set model parameters.
-            self.model.set_parameter_values(model_params)
+            model.set_parameter_values(model_params)
 
 
 class ResumeModelSaverLoader(FullModelSaverLoader):
-    '''Save parameters of model and those of step rule.
-
-    '''
+    '''Save parameters of model and those of step rule.'''
     def __init__(self, algorithm, **kwargs):
         '''
         :param algorithm: blocks.algorithms.GradientDescent
             To step rule parameters
         '''
-        super(ResumeModelSaverLoader, self).__init__(*kwargs)
+        super(ResumeModelSaverLoader, self).__init__(**kwargs)
         self.algorithm = algorithm
 
-    def save_model(self, save_to=None):
+    def save_model(self, model=None, save_to=None):
         '''Save training processing including parameters of model and step rule.
 
         This is designed to save model for futural training.
         '''
+        if model is None:
+            model = self.model
         if save_to is None:
             save_to = self.save_to
         if not os.path.exists(os.path.dirname(save_to)):
@@ -80,17 +106,19 @@ class ResumeModelSaverLoader(FullModelSaverLoader):
         with open(save_to, 'wb+') as f:
             logger.info('Saving parameters to %s...' % save_to)
 
-            cPickle.dump(self.model.get_parameter_values(), f)
+            cPickle.dump(model.get_parameter_values(), f)
             # Save step rule parameters in order of model.parameters
             # Note for some step rule like AdaDelta, one model parameter corresponds
             # multiple step rule parameters
             cPickle.dump([update[0].get_value() for update in self.algorithm.step_rule_updates], f)
 
-    def load_model(self, load_from=None):
+    def load_model(self, model=None, load_from=None):
         '''Load parameters of current model and step rule
 
         All the parameters of the model and step rule should match exactly
         '''
+        if model is None:
+            model = self.model
         if load_from is None:
             load_from = self.load_from
         logger.info('Load model parameters from {0}'.format(load_from))
@@ -101,7 +129,7 @@ class ResumeModelSaverLoader(FullModelSaverLoader):
                 model_params = cPickle.load(f)
                 step_rule_params = cPickle.load(f)
             # Set model parameters
-            self.model.set_parameter_values(model_params)
+            model.set_parameter_values(model_params)
             # Set step rule parameters
             for update, value in zip(self.algorithm.step_rule_updates, step_rule_params):
                 update[0].set_value(value)
@@ -127,7 +155,9 @@ class PartialModelSaverLoader(FullModelSaverLoader):
         assert isinstance(initialize_sources, dict)
         self.initialize_sources = initialize_sources
 
-    def load_model(self, load_from=None):
+    def load_model(self, model=None, load_from=None):
+        if model is None:
+            model = self.model
         if load_from is None:
             load_from = self.load_from
         logger.info('Load model parameters from {0}'.format(load_from))
@@ -135,11 +165,11 @@ class PartialModelSaverLoader(FullModelSaverLoader):
             raise ValueError('Model file does not exist!')
         else:
             old_model_params = cPickle.load(open(load_from, 'rb'))
-            cur_model_params = self.model.get_parameter_values()
+            cur_model_params = model.get_parameter_values()
             for old_name, cur_name in self.initialize_sources.iteritems():
                 cur_model_params[cur_name] = old_model_params[old_name]
             # Set model parameters.
-            self.model.set_parameter_values(cur_model_params)
+            model.set_parameter_values(cur_model_params)
 
 
 class PartialResumeModelSaverLoader(ResumeModelSaverLoader):
@@ -150,7 +180,9 @@ class PartialResumeModelSaverLoader(ResumeModelSaverLoader):
         assert isinstance(initialize_sources, dict)
         self.initialize_sources = initialize_sources
 
-    def load_model(self, load_from=None):
+    def load_model(self, model=None, load_from=None):
+        if model is None:
+            model = self.model
         if load_from is None:
             load_from = self.load_from
         logger.info('Load model parameters from {0}'.format(load_from))
@@ -160,7 +192,7 @@ class PartialResumeModelSaverLoader(ResumeModelSaverLoader):
             with open(load_from, 'rb') as f:
                 old_model_params = cPickle.load(f)
                 old_step_rule_params = cPickle.load(f)
-            cur_model_params = self.model.get_parameter_values()
+            cur_model_params = model.get_parameter_values()
             cur_step_rule_params = self.algorithm.step_rule_updates
             span = len(old_step_rule_params) / len(old_model_params)
             old_keys = old_model_params.keys()
@@ -203,7 +235,9 @@ class EmbedInitializer(PartialModelSaverLoader):
         self.embed_param_name = embed_param_name
         self.external_embeds = external_embeds
 
-    def load_model(self, load_from=None):
+    def load_model(self, model=None, load_from=None):
+        if model is None:
+            model = self.model
         if load_from is None:
             load_from = self.load_from
         super(EmbedInitializer, self).load_model(load_from)
@@ -212,7 +246,7 @@ class EmbedInitializer(PartialModelSaverLoader):
                 old_model_params = cPickle.load(f)
                 logger.info('Load embeddings from {0}'.format(load_from))
                 self.external_embeds = old_model_params[self.embed_param_name]
-        embed_var = self.model.get_parameter_dict()[self.embed_param_name]
+        embed_var = model.get_parameter_dict()[self.embed_param_name]
         cur_embeds = embed_var.get_value()
         initialized_num = 0
         for token, cur_idx in self.model_token2index.iteritems():

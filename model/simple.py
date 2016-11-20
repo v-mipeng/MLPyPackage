@@ -65,7 +65,6 @@ class LRModel(AbstractModel):
         else:
             self.label_weight = theano.shared(np.array(label_weight, dtype=theano.config.floatX), name = 'label_weight')
         self._consider_constant = [self.label_weight]
-        self._build_model()
 
     def _define_inputs(self, *args, **kwargs):
         self.input = tensor.imatrix(self.input_name)
@@ -97,6 +96,7 @@ class LRModel(AbstractModel):
         pred_output = self._get_pred_dist()
 
         self.pred = tensor.argmax(pred_output, axis=1)
+        self.pred.name = self.output_name
         if self.noised_output_name is not None:
             cost = self.categorical_cross_entropy(self.noised_output, pred_output) * self.label_weight[self.output]
         else:
@@ -106,9 +106,8 @@ class LRModel(AbstractModel):
         accuracy = tensor.eq(self.output, self.pred).mean()
         accuracy.name = 'accuracy'
         self._train_cg_generator = cost
-        self._train_monitors = [cost, accuracy]
-        self._valid_monitors = [accuracy, cost]
-        self._test_monitors =[accuracy, cost]
+        self._train_monitors = [accuracy, cost]
+        self._valid_monitors = [accuracy]
         self._predict_monitor = [self.pred]
 
     def _apply_reg(self, params=None):

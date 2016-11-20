@@ -28,7 +28,7 @@ class DatasetContainer(object):
         return self.raw_dataset[source]
 
     def __setitem__(self, key, value):
-        if not len(value) != self.sample_num:
+        if len(value) != self.sample_num:
             raise ValueError('Dimension mismatch!')
         try:
             value = np.asarray(value)
@@ -146,6 +146,8 @@ class DatasetContainer(object):
         '''
         sample_num = self.sample_num
         part_one_num = int(sample_num * proportion)
+        if part_one_num < 1:
+            return self, None
         idxes = np.arange(sample_num)
         if shuffled:
             if seed is not None:
@@ -296,7 +298,6 @@ class AbstractDataset(object):
     def _process_after_mapping_for_predict(self, dataset):
         return dataset
 
-    @abstractmethod
     def _construct_shuffled_stream(self, dataset, for_type='train'):
         '''Construc a shuffled stream from an IndexableDataset object
 
@@ -312,28 +313,13 @@ class AbstractDataset(object):
         '''
         it = ShuffledExampleScheme(dataset.num_examples)
         stream = DataStream(dataset, iteration_scheme=it)
-        # # Sort samples by size and compact samples with similar size into a batch.
-        # stream = Batch(stream, iteration_scheme=ConstantScheme(self.batch_size * self.sort_batch_count))
-        # comparison = _balanced_batch_helper(stream.sources.index(self.compare_source))
-        # stream = Mapping(stream, SortMapping(comparison))
-        # stream = Unpack(stream)
-        # stream = Batch(stream, iteration_scheme=ConstantScheme(self.batch_size))
-        # # Add mask on inputs
-        # for source in self.need_mask_sources.iteritems():
-        #     stream = Padding(stream, mask_sources=[source[0]], mask_dtype=source[1])
         return stream
 
-    @abstractmethod
     def _construct_sequential_stream(self, dataset, for_type='train'):
         '''Construc a sequential stream from an IndexableDataset object
         '''
         it = SequentialExampleScheme(dataset.num_examples)
         stream = DataStream(dataset, iteration_scheme=it)
-        # # Batch examples
-        # stream = Batch(stream, iteration_scheme=ConstantScheme(self.batch_size))
-        # Add mask on inputs
-        # for source in self.need_mask_sources.iteritems():
-        #     stream = Padding(stream, mask_sources=[source[0]], mask_dtype=source[1])
         return stream
 
     def initialize(self, param_load_from):
@@ -457,8 +443,8 @@ class AbstractDataset(object):
 
     def _get_stream(self, raw_dataset, it='shuffled', for_type='train'):
         if raw_dataset is not None:
-            if not isinstance(raw_dataset, dict) or len(raw_dataset) == 0:
-                raise ValueError('raw_dataset should be a non empty dict!')
+            if not isinstance(raw_dataset, DatasetContainer) or len(raw_dataset) == 0:
+                raise ValueError('raw_dataset should be a non empty DatasetContainer!')
             compared_source = raw_dataset.values()[0]
             if not all([len(field) == len(compared_source) for field in raw_dataset.values()]):
                 raise ValueError('Field dimension mismatch!')
@@ -505,6 +491,8 @@ class AbstractDataset(object):
             return self._map_for_valid(raw_dataset)
         elif for_type == 'test':
             return self._map_for_test(raw_dataset)
+        elif for_type == 'predict':
+            return self._map_for_predict(raw_dataset)
         else:
             raise ValueError('{0} is not supported!'.format(for_type))
 
@@ -526,6 +514,8 @@ class AbstractDataset(object):
             return self._process_before_mapping_for_valid(raw_dataset)
         elif for_type == 'test':
             return self._process_before_mapping_for_valid(raw_dataset)
+        elif for_type == 'predict':
+            return self._process_after_mapping_for_predict(raw_dataset)
         else:
             raise ValueError('{0} for "for_type" is not supported!'.format(for_type))
 
@@ -546,6 +536,8 @@ class AbstractDataset(object):
             return self._process_after_mapping_for_valid(dataset)
         elif for_type == 'test':
             return self._process_after_mapping_for_valid(dataset)
+        elif for_type == 'predict':
+            return self._process_after_mapping_for_predict(dataset)
         else:
             raise ValueError('{0} for "for_type" is not supported!'.format(for_type))
 

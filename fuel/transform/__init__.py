@@ -1,5 +1,9 @@
+
 import theano
-from fuel.transformers import *
+import numpy
+import numpy as np
+
+from pml.dataset.transform import *
 
 
 class _balanced_batch_helper(object):
@@ -330,8 +334,8 @@ class TokenSampleByFrequency(Transformer):
         return tuple(batch_with_samplings)
 
 
-class QeurySample(Transformer):
-    def __init__(self, data_stream, sample_prob, sample_source='query_mask', seed=1234, *args, **kwargs):
+class QuerySample(Transformer):
+    def __init__(self, sample_prob, sample_source='query_mask', seed=1234, *args, **kwargs):
         '''For a given user, sample its queries.
 
         :param data_stream: fuel.Datastream
@@ -340,10 +344,9 @@ class QeurySample(Transformer):
         :param sample_prob: float (0.,1.)
                 Sample out sample_prob * size(queries) queries
         :param seed: int
-                Int seed for numpy.random. The seed will increment one every time the transform applied.
+                Int seed for np.random. The seed will increment one every time the transform applied.
         '''
-        super(QeurySample, self).__init__(
-            data_stream, produces_examples=False, **kwargs)
+        super(QuerySample, self).__init__(produces_examples=False, **kwargs)
         self.seed = seed
         self.sample_source = sample_source
         self.sample_prob = sample_prob
@@ -358,8 +361,8 @@ class QeurySample(Transformer):
             if source != self.sample_source:
                 batch_with_samplings.append(source_batch)
                 continue
-            numpy.random.seed(self.seed)
-            rvs = numpy.random.rand(*source_batch.shape[0:2])
+            np.random.seed(self.seed)
+            rvs = np.random.rand(*source_batch.shape[0:2])
             self.seed += 1
             source_batch *= (rvs < self.sample_prob)[:,:,None]
             batch_with_samplings.append(source_batch)
@@ -368,7 +371,7 @@ class QeurySample(Transformer):
 
 class QueryMerge(Transformer):
     '''Merge queries of a user into bag of words'''
-    def __init__(self, data_stream, merge_source='query', *args, **kwargs):
+    def __init__(self, merge_source='query', *args, **kwargs):
         '''For a given user, sample its queries.
 
         :param data_stream: fuel.Datastream
@@ -377,10 +380,9 @@ class QueryMerge(Transformer):
         :param sample_prob: float (0.,1.)
                 Sample out sample_prob * size(queries) queries
         :param seed: int
-                Int seed for numpy.random. The seed will increment one every time the transform applied.
+                Int seed for np.random. The seed will increment one every time the transform applied.
         '''
-        super(QueryMerge, self).__init__(
-            data_stream, produces_examples=False, **kwargs)
+        super(QueryMerge, self).__init__(produces_examples=False, **kwargs)
         self.merge_source = merge_source
         self._initialize()
 
@@ -391,29 +393,29 @@ class QueryMerge(Transformer):
         batch_merged = []
         new_mask = None
         for source, source_batch in zip(self.data_stream.sources, batch):
-            if source != self.sample_source:
+            if source != self.merge_source:
                 batch_merged.append(source_batch)
                 continue
             queries = []
             masks = batch[self.data_stream.sources.index(self.merge_source+'_mask')]
             max_len = 0
             for i in range(len(source_batch)):
-                words = numpy.unique(source_batch[i][masks[i] > 0.])
+                words = np.unique(source_batch[i][masks[i] > 0.])
                 if len(words) > max_len:
                     max_len = len(words)
                 queries.append(words)
-            new_batch = numpy.zeros((len(source_batch), max_len), dtype=source_batch.dtype)
-            new_mask = numpy.zeros((len(source_batch), max_len), dtype=masks.dtype)
+            new_batch = np.zeros((len(source_batch), max_len), dtype=source_batch.dtype)
+            new_mask = np.zeros((len(source_batch), max_len), dtype=masks.dtype)
             for i in range(len(source_batch)):
                 new_batch[i][0:len(queries[i])] = queries[i]
                 new_mask[i][0:len(queries[i])] = 1.
             batch_merged.append(new_batch)
-        batch_merged[self.data_stream.sources.index[self.merge_source+'_mask']] = new_mask
+        batch_merged[self.data_stream.sources.index(self.merge_source+'_mask')] = new_mask
         return tuple(batch_merged)
 
 
 class BaggedQuerySample(Transformer):
-    def __init__(self, data_stream, sample_source, sample_prob, sample_source_mask = None, *args, **kwargs):
+    def __init__(self, sample_source, sample_prob, sample_source_mask = None, **kwargs):
         '''
         For a given user, sample its queries and bag words of sampled queries
         :param data_stream:
@@ -422,8 +424,7 @@ class BaggedQuerySample(Transformer):
         :param kwargs:
         :return:
         '''
-        super(BaggedQuerySample, self).__init__(
-            data_stream, produces_examples=False, **kwargs)
+        super(BaggedQuerySample, self).__init__(**kwargs)
         self.sample_source = sample_source
         if sample_source_mask is None:
             sample_source_mask = sample_source + '_mask'
@@ -462,7 +463,7 @@ class BaggedQuerySample(Transformer):
 
 
 class OutputNoise(Transformer):
-    def __init__(self, data_stream, output_source, max_noise_prob, label2freq, decay_rate=1., **kwargs):
+    def __init__(self, output_source, max_noise_prob, label2freq, decay_rate=1., **kwargs):
         '''
         For a given example, sample its feature with probability given by sample_prob
         :param data_stream:
@@ -471,8 +472,7 @@ class OutputNoise(Transformer):
         :param kwargs:
         :return:
         '''
-        super(OutputNoise, self).__init__(
-            data_stream, produces_examples=False, **kwargs)
+        super(OutputNoise, self).__init__(produces_examples=False, **kwargs)
         self.output_source = output_source
         self.max_noise_prob = max_noise_prob
         self.label2freq = label2freq

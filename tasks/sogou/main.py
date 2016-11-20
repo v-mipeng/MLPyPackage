@@ -1,5 +1,6 @@
-import os
+import sys
 
+from pml.entrance import TypicalEntrance
 from pml.tasks.sogou.config import SogouMultiTaskConfig
 from pml.tasks.sogou.entrance import SogouEntrance
 from pml.tasks.sogou.preprocess import *
@@ -31,16 +32,11 @@ def preprocess():
 
 if __name__ == '__main__':
     # You should do pre-processing first if your data have not been processed.
-    # Refer above preprocess function for more detail!
-
-    # preprocess()
-
-    # Train model
+    # Refer above function preprocess for more detail
     config = SogouMultiTaskConfig()
     entrance = SogouEntrance(config)
     entrance.train()
     print('Train Done!')
-    # Do prediction
     config.model_load_from = config.model_save_to
     entrance.reset(reset_what='model_saver_loader')
     entrance.predict()

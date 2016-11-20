@@ -9,132 +9,15 @@ from abc import ABCMeta, abstractmethod
 from collections import OrderedDict
 
 import theano
-from blocks.graph import ComputationGraph
 from blocks.roles import add_role, ALGORITHM_HYPERPARAMETER, ALGORITHM_BUFFER
 from blocks.theano_expressions import l2_norm
 from blocks.utils import (dict_subset, pack, shared_floatx,
                           shared_floatx_zeros_matching)
+import blocks.algorithms as algorithms
 from picklable_itertools.extras import equizip
-from six import add_metaclass
 from theano import tensor
 
 logger = logging.getLogger(__name__)
-
-
-@add_metaclass(ABCMeta)
-class TrainingAlgorithm(object):
-    """Base class for training algorithms.
-
-    A training algorithm object has a simple life-cycle.
-    First it is initialized by calling its :meth:`initialize` method.
-    At this stage, for instance, Theano functions can be compiled.
-    After that the :meth:`process_batch` method is repeatedly
-    called with a batch of training data as a parameter.
-
-    """
-    @abstractmethod
-    def initialize(self, **kwargs):
-        """Initialize the training algorithm."""
-        pass
-
-    @abstractmethod
-    def process_batch(self, batch):
-        """Process a batch of training data.
-
-        Attributes
-        ----------
-        batch : dict
-            A dictionary of (source name, data) pairs.
-
-        """
-        pass
-
-
-class DifferentiableCostMinimizer(TrainingAlgorithm):
-    """Minimizes a differentiable cost given as a Theano expression.
-
-    Very often the goal of training is to minimize the expected value of a
-    Theano expression. Batch processing in this cases typically consists of
-    running a (or a few) Theano functions.
-    :class:`DifferentiableCostMinimizer` is the base class for such
-    algorithms.
-
-    Parameters
-    ----------
-    cost : :class:`~tensor.TensorVariable`
-        The objective to be minimized.
-    parameters : list of :class:`~tensor.TensorSharedVariable`
-        The parameters to be tuned.
-
-    Attributes
-    ----------
-    updates : list of :class:`~tensor.TensorSharedVariable` updates
-        Updates to be done for every batch. It is required that the
-        updates are done using the old values of optimized parameters.
-    cost : :class:`~tensor.TensorVariable`
-        The objective to be minimized.
-    parameters : list of :class:`~tensor.TensorSharedVariable`
-        The parameters to be tuned.
-
-    Notes
-    -----
-    Changing `updates` attribute or calling `add_updates` after
-    the `initialize` method is called will have no effect.
-
-    .. todo::
-
-       Some shared variables are not parameters (e.g. those created by
-       random streams).
-
-    .. todo::
-
-       Due to a rather premature status of the :class:`ComputationGraph`
-       class the parameter used only inside scans are not fetched
-       currently.
-
-    """
-    def __init__(self, cost, parameters):
-        self.cost = cost
-        self.parameters = parameters
-        self._cost_computation_graph = ComputationGraph(self.cost)
-        self._updates = []
-
-    @property
-    def inputs(self):
-        """Return inputs of the cost computation graph.
-
-        Returns
-        -------
-        inputs : list of :class:`~tensor.TensorVariable`
-            Inputs to this graph.
-
-        """
-        return self._cost_computation_graph.inputs
-
-    @property
-    def updates(self):
-        return self._updates
-
-    @updates.setter
-    def updates(self, value):
-        self._updates = value
-
-    def add_updates(self, updates):
-        """Add updates to the training process.
-
-        The updates will be done _before_ the parameters are changed.
-
-        Parameters
-        ----------
-        updates : list of tuples or :class:`~collections.OrderedDict`
-            The updates to add.
-
-        """
-        if isinstance(updates, OrderedDict):
-            updates = list(updates.items())
-        if not isinstance(updates, list):
-            raise ValueError
-        self.updates.extend(updates)
 
 
 variable_mismatch_error = """
@@ -152,7 +35,8 @@ Blocks didn't find all the sources ({sources}) of the training dataset \
 that match the names of the Theano variables ({variables})."""
 
 
-class GradientDescent(DifferentiableCostMinimizer):
+
+class GradientDescent(algorithms.GradientDescent):
     """A base class for all gradient descent algorithms.
 
     By "gradient descent" we mean a training algorithm of the following
@@ -215,14 +99,33 @@ class GradientDescent(DifferentiableCostMinimizer):
         super(GradientDescent, self).__init__(**kwargs)
 
         self.gradients = gradients
+        # Calculate gradients of subset of parameters
+        ordinary_parameters = []
+        sub_parameters = []
+        for parameter in self.parameters:
+            if hasattr(parameter.tag, 'subsets'):
+                sub_parameters.append(parameter)
+            else:
+                ordinary_parameters.append(parameter)
         if not self.gradients:
-            logger.info("Taking the cost gradient")
+            print("Taking the cost gradient")
+            # Get gradient of ordinary parameters
             self.gradients = dict(
-                equizip(self.parameters, tensor.grad(
-                    self.cost, self.parameters,
+                equizip(ordinary_parameters, tensor.grad(
+                    self.cost,
+                    ordinary_parameters,
                     known_grads=known_grads,
                     consider_constant=consider_constant)))
-            logger.info("The cost gradient computation graph is built")
+            # Get gradient of parameters with subtensor operation
+            for parameter in sub_parameters:
+                grads = tensor.grad(
+                    self.cost,
+                    parameter.tag.subsets,
+                    known_grads=known_grads,
+                    consider_constant=consider_constant
+                )
+                self.gradients[parameter] = grads
+            print("The cost gradient computation graph is built")
         else:
             if known_grads:
                 raise ValueError("known_grads has no effect when gradients "
@@ -232,129 +135,39 @@ class GradientDescent(DifferentiableCostMinimizer):
                                  "gradients are passed in")
         self.step_rule = step_rule if step_rule else Scale()
 
-        self.total_gradient_norm = l2_norm(
-            self.gradients.values()).copy(name="total_gradient_norm")
+        # self.total_gradient_norm = l2_norm(
+        #     self.gradients.values()).copy(name="total_gradient_norm")
 
         self.steps, self.step_rule_updates = (
             self.step_rule.compute_steps(self.gradients))
-        self.total_step_norm = l2_norm(
-            self.steps.values()).copy(name="total_step_norm")
+        # self.total_step_norm = l2_norm(
+        #     self.steps.values()).copy(name="total_step_norm")
         self.on_unused_sources = on_unused_sources
         self.theano_func_kwargs = (theano_func_kwargs if theano_func_kwargs
                                    is not None else dict())
 
     def initialize(self):
-        logger.info("Initializing the training algorithm")
+        print("Initializing the training algorithm")
         all_updates = self.updates
         # Note: the gradients are computed in the same order in which
         # the parameters were given. Keep it like that to ensure
         # reproducibility.
         for parameter in self.parameters:
-            all_updates.append((parameter, parameter - self.steps[parameter]))
+            if not hasattr(parameter.tag, 'subsets'):
+                all_updates.append((parameter, parameter - self.steps[parameter]))
+            else:
+                sub_steps = self.steps[parameter]
+                for subset, sub_step in zip(parameter.tag.subsets, sub_steps):
+                    all_updates.append((parameter, tensor.inc_subtensor(subset, -sub_step)))
         # self.step_rule_updates are updates for step rules and self.steps are that for parameter update.
         all_updates += self.step_rule_updates
         self._function = theano.function(
             self.inputs, [], updates=all_updates, **self.theano_func_kwargs)
-        logger.info("The training algorithm is initialized")
-
-    def _validate_source_names(self, batch):
-        in_names = [v.name for v in self.inputs]
-
-        if not set(in_names).issubset(set(batch.keys())):
-            raise ValueError("Didn't find all sources: " +
-                             source_missing_error.format(
-                                 sources=batch.keys(),
-                                 variables=in_names))
-        if not set(batch.keys()).issubset(set(in_names)):
-            if self.on_unused_sources == 'ignore':
-                pass
-            elif self.on_unused_sources == 'warn':
-                if not hasattr(self, '_unused_source_warned'):
-                    logger.warn(variable_mismatch_error.format(
-                        sources=batch.keys(),
-                        variables=in_names))
-                self._unused_source_warned = True
-            elif self.on_unused_sources == 'raise':
-                raise ValueError(
-                    "mismatch of variable names and data sources" +
-                    variable_mismatch_error.format(
-                        sources=batch.keys(),
-                        variables=in_names))
-            else:
-                raise ValueError("Wrong value of on_unused_sources: {}."
-                                 .format(self.on_unused_sources))
-
-    def process_batch(self, batch):
-        self._validate_source_names(batch)
-        ordered_batch = [batch[v.name] for v in self.inputs]
-        self._function(*ordered_batch)
+        print("The training algorithm is initialized")
 
 
-@add_metaclass(ABCMeta)
-class StepRule(object):
-    """A rule to compute steps for a gradient descent algorithm."""
-    def compute_step(self, parameter, previous_step):
-        """Build a Theano expression for the step for a parameter.
-
-        This method is called by default implementation of
-        :meth:`compute_steps`, it relieves from writing a loop each time.
-
-        Parameters
-        ----------
-        parameter : :class:`~tensor.TensorSharedVariable`
-            The parameter.
-        previous_step : :class:`~tensor.TensorVariable`
-            Some quantity related to the gradient of the cost with respect
-            to the parameter, either the gradient itself or a step in a
-            related direction.
-
-        Returns
-        -------
-        step : :class:`~theano.Variable`
-            Theano variable for the step to take.
-        updates : list
-            A list of tuples representing updates to be performed. This
-            is useful for stateful rules such as :class:`Momentum` which
-            need to update shared variables after itetations.
-
-        """
-        raise NotImplementedError
-
-    # previous_steps are actually gradients
-    def compute_steps(self, previous_steps):
-        """Build a Theano expression for steps for all parameters.
-
-        Override this method if you want to process the steps
-        with respect to all parameters as a whole, not parameter-wise.
-
-        Parameters
-        ----------
-        previous_steps : OrderedDict
-            An :class:`~OrderedDict` of
-            (:class:`~tensor.TensorSharedVariable`
-            :class:`~tensor.TensorVariable`) pairs. The keys are the
-            parameters being trained, the values are the expressions for
-            quantities related to gradients of the cost with respect to
-            the parameters, either the gradients themselves or steps in
-            related directions.
-
-        Returns
-        -------
-        steps : OrderedDict
-            A dictionary of the proposed steps in the same form as
-            `previous_steps`.
-        updates : list
-            A list of tuples representing updates to be performed.
-
-        """
-        parameter_wise = [self.compute_step(parameter,
-                                            previous_steps[parameter])
-                          for parameter in previous_steps]
-        steps, updates = equizip(*parameter_wise)
-        steps = OrderedDict((parameter, step) for parameter, step
-                            in equizip(previous_steps.keys(), steps))
-        updates = list(itertools.chain(*updates))
-        return steps, updates
+class StepRule(algorithms.StepRule):
+    pass
 
 
 class CompositeRule(StepRule):
@@ -467,7 +280,7 @@ class Momentum(CompositeRule):
         self.components = [scale, basic_momentum]
 
 
-class AdaDelta(StepRule):
+class AdaDelta(algorithms.AdaDelta):
     """Adapts the step size over time using only first order information.
 
     Parameters
@@ -501,24 +314,49 @@ class AdaDelta(StepRule):
             parameter, "mean_square_delta_x_tm1")
         add_role(mean_square_delta_x_tm1, ALGORITHM_BUFFER)
 
-        mean_square_step_t = (
-            self.decay_rate * mean_square_step_tm1 +
-            (1 - self.decay_rate) * tensor.sqr(previous_step)
-        )
+        if not hasattr(parameter.tag, 'subsets'):
+            mean_square_step_t = (
+                self.decay_rate * mean_square_step_tm1 +
+                (1 - self.decay_rate) * tensor.sqr(previous_step)
+            )
 
-        rms_delta_x_tm1 = tensor.sqrt(mean_square_delta_x_tm1 + self.epsilon)
-        rms_step_t = tensor.sqrt(mean_square_step_t + self.epsilon)
-        delta_x_t = rms_delta_x_tm1 / rms_step_t * previous_step
+            rms_delta_x_tm1 = tensor.sqrt(mean_square_delta_x_tm1 + self.epsilon)
+            rms_step_t = tensor.sqrt(mean_square_step_t + self.epsilon)
+            delta_x_t = rms_delta_x_tm1 / rms_step_t * previous_step
 
-        mean_square_delta_x_t = (
-            self.decay_rate * mean_square_delta_x_tm1 +
-            (1 - self.decay_rate) * tensor.sqr(delta_x_t)
-        )
+            mean_square_delta_x_t = (
+                self.decay_rate * mean_square_delta_x_tm1 +
+                (1 - self.decay_rate) * tensor.sqr(delta_x_t)
+            )
 
-        step = delta_x_t
-        #TODO: Store mean_square_stem_tm1 and mean_square_delta_x_tm1 to retrain with loaded model!
-        updates = [(mean_square_step_tm1, mean_square_step_t),
-                   (mean_square_delta_x_tm1, mean_square_delta_x_t)]
+            step = delta_x_t
+            #TODO: Store mean_square_stem_tm1 and mean_square_delta_x_tm1 to retrain with loaded model!
+            updates = [(mean_square_step_tm1, mean_square_step_t),
+                       (mean_square_delta_x_tm1, mean_square_delta_x_t)]
+        else:
+            step = []
+            updates = []
+            for i in range(len(previous_step)):
+                mean_square_step_tm1_subset = mean_square_step_tm1[parameter.tag.idxes[i]]
+                mean_square_delta_x_tm1_subset = mean_square_delta_x_tm1[parameter.tag.idxes[i]]
+                mean_square_step_t_subset = (
+                    self.decay_rate * mean_square_step_tm1_subset +
+                    (1 - self.decay_rate) * tensor.sqr(previous_step[i])
+                )
+
+                rms_delta_x_tm1_subset = tensor.sqrt(mean_square_delta_x_tm1_subset + self.epsilon)
+                rms_step_t_subset = tensor.sqrt(mean_square_step_t_subset + self.epsilon)
+                delta_x_t_subset = rms_delta_x_tm1_subset / rms_step_t_subset * previous_step[i]
+
+                mean_square_delta_x_t_subset = (
+                    self.decay_rate * mean_square_delta_x_tm1_subset +
+                    (1 - self.decay_rate) * tensor.sqr(delta_x_t_subset)
+                )
+                step.append(delta_x_t_subset)
+                updates += [(mean_square_step_tm1, tensor.set_subtensor(mean_square_step_tm1_subset,
+                                                                       mean_square_step_t_subset)),
+                           (mean_square_delta_x_tm1, tensor.set_subtensor(mean_square_delta_x_tm1_subset,
+                                                                          mean_square_delta_x_t_subset))]
         return step, updates
 
 
