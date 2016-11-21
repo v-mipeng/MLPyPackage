@@ -1,18 +1,21 @@
 import os
 
-from ..sogou.readwrite import *
-from ..sogou.preprocess import *
-from ..sogou.dataset import *
-from ..sogou.transform import *
-from ..sogou.model import *
-from ..sogou.saveload import *
+from pml.tasks.sogou.readwrite import *
+from pml.tasks.sogou.preprocess import *
+from pml.tasks.sogou.dataset import *
+from pml.tasks.sogou.transform import *
+from pml.tasks.sogou.model import *
+from pml.tasks.sogou.saveload import *
 from pml.config.base import BasicConfig
 
 
 class SogouBaseConfig(BasicConfig):
     def __init__(self):
         super(SogouBaseConfig, self).__init__()
-        
+
+        # Name of project
+        self.project_name = 'Package'
+
         # Do validation every 0.5 epoch
         self.valid_freq = 0.5
         # Print training result every 100 batches

@@ -8,10 +8,9 @@ class BasicConfig(object):
     def __init__(self):
         # Running mode: debug or run
         self.mode = "debug"
-    
-        #region raw dataset control parameters
-        cur_path = os.path.abspath(__file__)
-        self.project_dir = cur_path[0:cur_path.index('source\pml')]
+
+        # Name of project
+        self.project_name = None
     
         # GPU: "int32"; CPU: "int64"
         self.int_type = "int32"
@@ -32,6 +31,11 @@ class BasicConfig(object):
 
         # Random seed used for random value generation
         self.seed = 1234
+
+    @property
+    def project_dir(self):
+        cur_path = os.path.abspath(__file__)
+        return cur_path[0:cur_path.index(self.project_name)+len(self.project_name)]
 
     def get_train_dataset_reader_writer(self):
         '''Get dataset reader writer object

@@ -1,23 +1,144 @@
 """Rewrite blocks algorithms to do specific works.
+
+As blocks are updating, to make sure the stability, some classes are copied here.
 TODO:
-    1. Add control on step rules
-    2.
+    1. Add control on step rules (currently only AdaDelta supported)
 """
+
 import itertools
 import logging
 from abc import ABCMeta, abstractmethod
 from collections import OrderedDict
+from six import add_metaclass
 
 import theano
 from blocks.roles import add_role, ALGORITHM_HYPERPARAMETER, ALGORITHM_BUFFER
 from blocks.theano_expressions import l2_norm
 from blocks.utils import (dict_subset, pack, shared_floatx,
                           shared_floatx_zeros_matching)
-import blocks.algorithms as algorithms
 from picklable_itertools.extras import equizip
 from theano import tensor
 
+from pml.blocks.graph import ComputationGraph
+
+
 logger = logging.getLogger(__name__)
+
+
+@add_metaclass(ABCMeta)
+class TrainingAlgorithm(object):
+    """Base class for training algorithms.
+
+    A training algorithm object has a simple life-cycle.
+    First it is initialized by calling its :meth:`initialize` method.
+    At this stage, for instance, Theano functions can be compiled.
+    After that the :meth:`process_batch` method is repeatedly
+    called with a batch of training data as a parameter.
+
+    """
+    @abstractmethod
+    def initialize(self, **kwargs):
+        """Initialize the training algorithm."""
+        pass
+
+    @abstractmethod
+    def process_batch(self, batch):
+        """Process a batch of training data.
+
+        Attributes
+        ----------
+        batch : dict
+            A dictionary of (source name, data) pairs.
+
+        """
+        pass
+
+
+class DifferentiableCostMinimizer(TrainingAlgorithm):
+    """Minimizes a differentiable cost given as a Theano expression.
+
+    Very often the goal of training is to minimize the expected value of a
+    Theano expression. Batch processing in this cases typically consists of
+    running a (or a few) Theano functions.
+    :class:`DifferentiableCostMinimizer` is the base class for such
+    algorithms.
+
+    Parameters
+    ----------
+    cost : :class:`~tensor.TensorVariable`
+        The objective to be minimized.
+    parameters : list of :class:`~tensor.TensorSharedVariable`
+        The parameters to be tuned.
+
+    Attributes
+    ----------
+    updates : list of :class:`~tensor.TensorSharedVariable` updates
+        Updates to be done for every batch. It is required that the
+        updates are done using the old values of optimized parameters.
+    cost : :class:`~tensor.TensorVariable`
+        The objective to be minimized.
+    parameters : list of :class:`~tensor.TensorSharedVariable`
+        The parameters to be tuned.
+
+    Notes
+    -----
+    Changing `updates` attribute or calling `add_updates` after
+    the `initialize` method is called will have no effect.
+
+    .. todo::
+
+       Some shared variables are not parameters (e.g. those created by
+       random streams).
+
+    .. todo::
+
+       Due to a rather premature status of the :class:`ComputationGraph`
+       class the parameter used only inside scans are not fetched
+       currently.
+
+    """
+    def __init__(self, cost, parameters):
+        self.cost = cost
+        self.parameters = parameters
+        self._cost_computation_graph = ComputationGraph(self.cost)
+        self._updates = []
+
+    @property
+    def inputs(self):
+        """Return inputs of the cost computation graph.
+
+        Returns
+        -------
+        inputs : list of :class:`~tensor.TensorVariable`
+            Inputs to this graph.
+
+        """
+        return self._cost_computation_graph.inputs
+
+    @property
+    def updates(self):
+        return self._updates
+
+    @updates.setter
+    def updates(self, value):
+        self._updates = value
+
+    def add_updates(self, updates):
+        """Add updates to the training process.
+
+        The updates will be done _before_ the parameters are changed.
+
+        Parameters
+        ----------
+        updates : list of tuples or :class:`~collections.OrderedDict`
+            The updates to add.
+
+        """
+        if isinstance(updates, OrderedDict):
+            updates = list(updates.items())
+        if not isinstance(updates, list):
+            raise ValueError
+        self.updates.extend(updates)
 
 
 variable_mismatch_error = """
@@ -36,7 +157,7 @@ that match the names of the Theano variables ({variables})."""
 
 
 
-class GradientDescent(algorithms.GradientDescent):
+class GradientDescent(DifferentiableCostMinimizer):
     """A base class for all gradient descent algorithms.
 
     By "gradient descent" we mean a training algorithm of the following
@@ -165,9 +286,104 @@ class GradientDescent(algorithms.GradientDescent):
             self.inputs, [], updates=all_updates, **self.theano_func_kwargs)
         print("The training algorithm is initialized")
 
+    def _validate_source_names(self, batch):
+        in_names = [v.name for v in self.inputs]
 
-class StepRule(algorithms.StepRule):
-    pass
+        if not set(in_names).issubset(set(batch.keys())):
+            raise ValueError("Didn't find all sources: " +
+                             source_missing_error.format(
+                                 sources=batch.keys(),
+                                 variables=in_names))
+        if not set(batch.keys()).issubset(set(in_names)):
+            if self.on_unused_sources == 'ignore':
+                pass
+            elif self.on_unused_sources == 'warn':
+                if not hasattr(self, '_unused_source_warned'):
+                    logger.warn(variable_mismatch_error.format(
+                        sources=batch.keys(),
+                        variables=in_names))
+                self._unused_source_warned = True
+            elif self.on_unused_sources == 'raise':
+                raise ValueError(
+                    "mismatch of variable names and data sources" +
+                    variable_mismatch_error.format(
+                        sources=batch.keys(),
+                        variables=in_names))
+            else:
+                raise ValueError("Wrong value of on_unused_sources: {}."
+                                 .format(self.on_unused_sources))
+
+    def process_batch(self, batch):
+        self._validate_source_names(batch)
+        ordered_batch = [batch[v.name] for v in self.inputs]
+        self._function(*ordered_batch)
+
+
+@add_metaclass(ABCMeta)
+class StepRule(object):
+    """A rule to compute steps for a gradient descent algorithm."""
+    def compute_step(self, parameter, previous_step):
+        """Build a Theano expression for the step for a parameter.
+
+        This method is called by default implementation of
+        :meth:`compute_steps`, it relieves from writing a loop each time.
+
+        Parameters
+        ----------
+        parameter : :class:`~tensor.TensorSharedVariable`
+            The parameter.
+        previous_step : :class:`~tensor.TensorVariable`
+            Some quantity related to the gradient of the cost with respect
+            to the parameter, either the gradient itself or a step in a
+            related direction.
+
+        Returns
+        -------
+        step : :class:`~theano.Variable`
+            Theano variable for the step to take.
+        updates : list
+            A list of tuples representing updates to be performed. This
+            is useful for stateful rules such as :class:`Momentum` which
+            need to update shared variables after itetations.
+
+        """
+        raise NotImplementedError
+
+    # previous_steps are actually gradients
+    def compute_steps(self, previous_steps):
+        """Build a Theano expression for steps for all parameters.
+
+        Override this method if you want to process the steps
+        with respect to all parameters as a whole, not parameter-wise.
+
+        Parameters
+        ----------
+        previous_steps : OrderedDict
+            An :class:`~OrderedDict` of
+            (:class:`~tensor.TensorSharedVariable`
+            :class:`~tensor.TensorVariable`) pairs. The keys are the
+            parameters being trained, the values are the expressions for
+            quantities related to gradients of the cost with respect to
+            the parameters, either the gradients themselves or steps in
+            related directions.
+
+        Returns
+        -------
+        steps : OrderedDict
+            A dictionary of the proposed steps in the same form as
+            `previous_steps`.
+        updates : list
+            A list of tuples representing updates to be performed.
+
+        """
+        parameter_wise = [self.compute_step(parameter,
+                                            previous_steps[parameter])
+                          for parameter in previous_steps]
+        steps, updates = equizip(*parameter_wise)
+        steps = OrderedDict((parameter, step) for parameter, step
+                            in equizip(previous_steps.keys(), steps))
+        updates = list(itertools.chain(*updates))
+        return steps, updates
 
 
 class CompositeRule(StepRule):
@@ -280,7 +496,7 @@ class Momentum(CompositeRule):
         self.components = [scale, basic_momentum]
 
 
-class AdaDelta(algorithms.AdaDelta):
+class AdaDelta(StepRule):
     """Adapts the step size over time using only first order information.
 
     Parameters

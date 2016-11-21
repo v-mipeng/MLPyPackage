@@ -2,9 +2,10 @@ import logging
 
 import numpy as np
 import theano
-from blocks.extensions.monitoring import DataStreamMonitoring, TrainingDataMonitoring
-from blocks.model import Model
 from blocks.monitoring.evaluators import DatasetEvaluator
+
+from pml.blocks.graph.model import Model
+from pml.blocks.extensions.monitoring import DataStreamMonitoring, TrainingDataMonitoring
 
 
 logger = logging.getLogger('model.extensions.monitors')
